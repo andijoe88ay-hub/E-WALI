@@ -76,7 +76,7 @@
                             <label class="block text-xs font-bold text-santara-textSec mb-1.5 uppercase tracking-wider">PILIH ROLE / HAK AKSES</label>
                             <select id="loginRoleSelect" onchange="onRoleChange()" class="w-full px-3.5 py-3 bg-gray-50 border border-santara-border rounded-xl text-xs font-semibold focus:ring-2 focus:ring-santara-teal focus:outline-none">
                                 <option value="walikelas">Wali Kelas (Login Email)</option>
-                                <option value="petugas">Siswa Kader Petugas QR (Token Akses)</option>
+                                <option value="siswa">Siswa (NISN & Password)</option>
                             </select>
                         </div>
                         <div>
@@ -224,8 +224,8 @@
         // =====================================================================
         // KONFIGURASI SUPABASE — ISI DUA NILAI INI (Supabase > Project Settings > API)
         // =====================================================================
-        const SUPABASE_URL = 'https://llalvnlzwfuywtysitjg.supabase.co';
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxsYWx2bmx6d2Z1eXd0eXNpdGpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5NzAzNTksImV4cCI6MjEwNzU0NjM1OX0.zjPUu9ObueU2OCyG03e3tOmX2bEKZT20I1hVYfIgP2c';
+        const SUPABASE_URL = 'https://gzxtrllrfhepfrlzqsem.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_uQASORoCLZZ3kRga3NpX2g_Va1yaLcB';
         // anon key AMAN dipublikasikan; data dilindungi RLS di database.
         const sb = (window.supabase && !SUPABASE_URL.includes('GANTI-DENGAN') && !SUPABASE_ANON_KEY.includes('GANTI-DENGAN'))
             ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
@@ -245,7 +245,8 @@
                 { quote: "Jadilah seperti montir TSM yang handal: selalu tahu persis di mana letak masalahnya dan bagaimana cara memperbaikinya dengan senyuman.", author: "Kearifan Anak TSM", type: "Jokes Santri" }
             ]
         };
-        let kaderToken = null;
+        let studentToken = null;
+        let qrTimer = null;
         let lastScan = { nis: '', at: 0 };
 
         // ---------- Helper ----------
@@ -255,8 +256,15 @@
         function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
         function errMsg(e) {
             const m = (e && (e.message || e.error_description)) || String(e);
-            if (/TOKEN_INVALID/.test(m)) return 'Token tidak valid atau sudah kedaluwarsa.';
-            if (/SISWA_TIDAK_DITEMUKAN/.test(m)) return 'NISN tidak ditemukan di kelas ini.';
+            if (/LOGIN_GAGAL/.test(m)) return 'NISN atau password salah.';
+            if (/AKUN_TERKUNCI/.test(m)) return 'Terlalu banyak percobaan gagal. Coba lagi 5 menit lagi.';
+            if (/SESI_INVALID/.test(m)) return 'Sesi berakhir, silakan login ulang.';
+            if (/QR_KEDALUWARSA/.test(m)) return 'QR Code sudah kedaluwarsa. Pindai ulang QR yang sedang tampil.';
+            if (/QR_INVALID/.test(m)) return 'QR Code tidak valid untuk kelas ini.';
+            if (/BUKAN_PETUGAS/.test(m)) return 'Anda belum ditugaskan sebagai Petugas QR.';
+            if (/PASSWORD_PENDEK/.test(m)) return 'Password minimal 6 karakter.';
+            if (/ALASAN_KOSONG/.test(m)) return 'Alasan wajib diisi.';
+            if (/SISWA_TIDAK_DITEMUKAN/.test(m)) return 'Siswa tidak ditemukan di kelas ini.';
             if (/Invalid login credentials/i.test(m)) return 'Email atau password salah.';
             if (e && e.code === '23505') return 'NISN sudah terdaftar di kelas ini.';
             if (/Failed to fetch|NetworkError/i.test(m)) return 'Tidak dapat terhubung ke server. Periksa koneksi internet.';
@@ -284,13 +292,14 @@
             r.readAsDataURL(file);
         }
         async function run(fn, okMsg, route) {   // jalankan operasi DB + refresh tampilan
-            if (needSb()) return;
+            if (needSb()) return false;
             try {
                 await fn();
-                await loadAll();
+                await refreshData();
                 if (okMsg) showToast(okMsg[0], okMsg[1]);
                 if (route) renderView(route);
-            } catch (e) { showToast('Gagal Menyimpan', errMsg(e)); }
+                return true;
+            } catch (e) { showToast('Gagal Menyimpan', errMsg(e)); return false; }
         }
 
         // ---------- Muat semua data milik guru dari Supabase ----------
@@ -301,8 +310,7 @@
                 sb.from('profiles').select('*').eq('id', uid).maybeSingle(),
                 sb.from('students').select('*').order('nis'),
                 sb.from('attendance').select('student_id,att_date,status,scan_time'),
-                q('violations'), q('counseling'), q('home_visits'), q('permissions'),
-                sb.from('class_tokens').select('*').eq('is_active', true).gt('expires_at', new Date().toISOString()).order('created_at', { ascending: false })
+                q('violations'), q('counseling'), q('home_visits'), q('permissions')
             ]);
             res.forEach(r => { if (r.error) throw r.error; });
             let prof = res[0].data;
@@ -326,7 +334,7 @@
             const byId = {};
             mockState.students = res[1].data.map(r => {
                 const t = todayRow[r.id];
-                const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: false,
+                const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
                     status: t ? t.status : 'BELUM', time: t ? t.scan_time : '-', attendanceSummary: sum[r.id] || { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 },
                     username: r.nis, accountStatus: r.is_active ? 'Aktif' : 'Nonaktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
                 byId[r.id] = st; return st;
@@ -336,7 +344,6 @@
             mockState.counseling = res[4].data.map(r => ({ id: r.id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
             mockState.homeVisits = res[5].data.map(r => ({ id: r.id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: r.evidence_url }));
             mockState.permissions = res[6].data.map(r => ({ id: r.id, studentId: r.student_id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, category: r.category, date: fmtDate(r.perm_date), rawDate: r.perm_date, reason: esc(r.reason), status: r.status, evidenceType: 'whatsapp', evidenceUrl: r.evidence_url || `https://wa.me/${sc.teacherPhone}` }));
-            mockState.tokens = res[7].data.map(r => ({ id: r.id, token: r.token, label: esc(r.label), expiresText: new Date(r.expires_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) + ' WIB' }));
             recalculateStats();
         }
 
@@ -349,29 +356,107 @@
             mockState.currentUser = { id: 0, name: sc.teacherName, role: `Wali Kelas ${sc.className}`, nip: sc.teacherNip, avatar: sc.avatar, isQrOfficer: false, phone: sc.teacherPhone, address: sc.schoolName, parent: 'Wali Kelas', parentPhone: sc.teacherPhone };
             proceedLoginSuccess();
         }
-        function startKaderSession(token, info) {
-            kaderToken = token;
-            mockState.currentRole = 'petugas';
+        // ---------- Helper WhatsApp ----------
+        function unesc(v) { return String(v == null ? '' : v).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'); }
+        function waNum(p) { let d = String(p || '').replace(/\D/g, ''); if (d.startsWith('0')) d = '62' + d.slice(1); else if (d.startsWith('8')) d = '62' + d; return d; }
+        function tglPanjang() { return new Date().toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); }
+        function openWaModal(title, text, url, noteHtml) {
+            const modal = document.getElementById('modalContainer');
+            const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between">
+                    <h3 class="font-bold text-sm">${esc(title)}</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+                <div class="p-6 space-y-4 text-xs">
+                    ${noteHtml || ''}
+                    <pre class="whitespace-pre-wrap break-words bg-gray-50 border rounded-xl p-3.5 text-[11px] font-medium text-gray-700 max-h-64 overflow-y-auto">${esc(text)}</pre>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button onclick="closeModal()" class="py-3.5 bg-white border hover:bg-gray-100 text-santara-navy font-bold rounded-xl">Lewati</button>
+                        <a href="${url}" target="_blank" rel="noopener" onclick="closeModal()" class="py-3.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl shadow-md text-center"><i class="fa-brands fa-whatsapp mr-1"></i>Kirim via WhatsApp</a>
+                    </div>
+                </div>`;
+            modal.classList.add('flex');
+            modal.classList.remove('hidden');
+        }
+
+        // ---------- QR dinamis (berotasi tiap 30 detik, ditandatangani server) ----------
+        function startQrRotation(canvasId, size, fetcher) {
+            clearInterval(qrTimer);
+            let last = '';
+            const paint = async () => {
+                const c = document.getElementById(canvasId);
+                if (!c) { clearInterval(qrTimer); return; }
+                try {
+                    const p = await fetcher();
+                    if (p && p !== last) { last = p; new QRious({ element: c, value: p, size }); }
+                } catch (e) { console.warn(e); }
+            };
+            paint();
+            qrTimer = setInterval(paint, 5000);
+        }
+
+        // ---------- Sesi ----------
+        async function startTeacherSession(user) {
+            mockState.currentRole = 'walikelas';
+            mockState.uid = user.id;
+            await loadAll();
             const sc = mockState.schoolConfig;
-            sc.className = info.class_name; sc.schoolName = info.school_name; sc.teacherName = info.teacher_name;
-            mockState.qrSettings.toleranceTime = info.qr_tolerance;
-            mockState.currentUser = { id: 0, name: 'Kader Petugas QR', role: `Kader Petugas QR ${info.class_name}`, nip: '', avatar: DEFAULT_AVATAR, isQrOfficer: true, phone: '', address: '', parent: '', parentPhone: '' };
+            mockState.currentUser = { id: 0, name: sc.teacherName, role: `Wali Kelas ${sc.className}`, nip: sc.teacherNip, avatar: sc.avatar, isQrOfficer: false, phone: sc.teacherPhone, address: sc.schoolName, parent: 'Wali Kelas', parentPhone: sc.teacherPhone };
+            proceedLoginSuccess();
+        }
+        function applyStudentData(me) {
+            const p = me.profile, r = me.student, sc = mockState.schoolConfig;
+            Object.assign(sc, { schoolName: p.school_name, department: p.department, className: p.class_name, academicYear: p.academic_year, principalName: p.principal_name, principalNip: p.principal_nip, teacherName: p.teacher_name, teacherNip: p.teacher_nip, teacherPhone: p.teacher_phone, address: p.address, avatar: DEFAULT_AVATAR });
+            mockState.qrSettings.startTime = p.qr_start;
+            mockState.qrSettings.toleranceTime = p.qr_tolerance;
+            const today = todayISO();
+            const sum = { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 };
+            let t = null;
+            me.attendance.forEach(a => { sum[a.status.toLowerCase()]++; if (a.att_date === today) t = a; });
+            const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
+                status: t ? t.status : 'BELUM', time: t ? t.scan_time : '-', attendanceSummary: sum, username: r.nis, accountStatus: 'Aktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
+            mockState.students = [st];
+            const who = { studentName: st.name, nis: st.nis };
+            mockState.violations = me.violations.map(x => ({ id: x.id, ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }));
+            mockState.counseling = me.counseling.map(x => ({ id: x.id, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
+            mockState.homeVisits = me.home_visits.map(x => ({ id: x.id, ...who, date: fmtDate(x.visit_date), officer: esc(x.officer), reason: esc(x.reason), result: esc(x.result), status: x.status, evidenceUrl: x.evidence_url }));
+            mockState.permissions = me.permissions.map(x => ({ id: x.id, studentId: r.id, ...who, category: x.category, date: fmtDate(x.perm_date), rawDate: x.perm_date, reason: esc(x.reason), status: x.status, evidenceType: 'whatsapp', evidenceUrl: x.evidence_url || `https://wa.me/${waNum(sc.teacherPhone)}` }));
+            mockState.currentUser = { id: r.id, nis: r.nis, name: r.name, role: `Siswa ${p.class_name}`, nip: '', avatar: r.avatar, isQrOfficer: !!r.is_qr_officer, phone: r.phone, address: r.address, parent: r.parent, parentPhone: r.parent_phone };
+            recalculateStats();
+        }
+        async function loadStudentAll() {
+            const { data, error } = await sb.rpc('student_me', { p_token: studentToken });
+            if (error) { if (/SESI_INVALID/.test(error.message || '')) handleLogout(); throw error; }
+            applyStudentData(data);
+        }
+        function refreshData() { return mockState.currentRole === 'siswa' ? loadStudentAll() : loadAll(); }
+        function syncSidebarUser() {
+            const cu = mockState.currentUser;
+            ['sidebarUserName', 'topbarUserName', 'dropdownUserFullName'].forEach(id => { const el = document.getElementById(id); if (el) el.innerText = cu.name; });
+            const ro = document.getElementById('sidebarUserRole'); if (ro) ro.innerText = cu.role;
+            ['sidebarUserAvatar', 'topbarUserAvatar'].forEach(id => { const el = document.getElementById(id); if (el) el.src = cu.avatar; });
+        }
+        function startStudentSession(token, me) {
+            studentToken = token;
+            try { sessionStorage.setItem('santara_stoken', token); } catch (e) { /* abaikan */ }
+            mockState.currentRole = 'siswa';
+            applyStudentData(me);
             proceedLoginSuccess();
         }
         function onRoleChange() {
-            const kader = document.getElementById('loginRoleSelect').value === 'petugas';
+            const siswa = document.getElementById('loginRoleSelect').value === 'siswa';
             const u = document.getElementById('loginUsername');
-            document.getElementById('loginUserLabel').innerText = kader ? 'TOKEN AKSES HARIAN' : 'EMAIL';
-            u.placeholder = kader ? 'Contoh: K7M2QX9R' : 'email@sekolah.sch.id';
+            document.getElementById('loginUserLabel').innerText = siswa ? 'NISN' : 'EMAIL';
+            u.placeholder = siswa ? 'Nomor NISN Anda' : 'email@sekolah.sch.id';
             u.value = '';
-            document.getElementById('loginPassword').closest('div.relative').parentElement.style.display = kader ? 'none' : '';
         }
         async function handleLogin() {
             if (needSb()) return;
             const role = document.getElementById('loginRoleSelect').value;
             const idv = document.getElementById('loginUsername').value.trim();
             const pw = document.getElementById('loginPassword').value;
-            if (!idv || (role === 'walikelas' && !pw)) { showToast('Peringatan', role === 'walikelas' ? 'Email dan password wajib diisi.' : 'Token akses wajib diisi.'); return; }
+            if (!idv || !pw) { showToast('Peringatan', role === 'walikelas' ? 'Email dan password wajib diisi.' : 'NISN dan password wajib diisi.'); return; }
             const btn = document.querySelector('#loginView button[onclick="handleLogin()"]');
             btn.disabled = true; btn.style.opacity = '.6';
             try {
@@ -380,10 +465,13 @@
                     if (error) throw error;
                     await startTeacherSession(data.user);
                 } else {
-                    const tk = idv.toUpperCase();
-                    const { data, error } = await sb.rpc('kader_login', { p_token: tk });
-                    if (error) throw error;
-                    startKaderSession(tk, data);
+                    await sb.auth.signOut();   // pastikan memakai role anon (sisa sesi guru dibersihkan)
+                    const lg = await sb.rpc('student_login', { p_nis: idv, p_password: pw });
+                    if (lg.error) throw lg.error;
+                    if (!lg.data.ok) throw new Error(lg.data.error);
+                    const me = await sb.rpc('student_me', { p_token: lg.data.token });
+                    if (me.error) throw me.error;
+                    startStudentSession(lg.data.token, me.data);
                 }
             } catch (e) { showToast('Peringatan', errMsg(e)); }
             finally { btn.disabled = false; btn.style.opacity = ''; }
@@ -414,6 +502,12 @@
             const { data } = await sb.auth.getSession();   // sesi guru tetap aktif setelah refresh
             if (data && data.session) {
                 try { await startTeacherSession(data.session.user); } catch (e) { showToast('Peringatan', errMsg(e)); }
+                return;
+            }
+            let tk = null; try { tk = sessionStorage.getItem('santara_stoken'); } catch (e) { /* abaikan */ }
+            if (tk) {
+                const me = await sb.rpc('student_me', { p_token: tk });
+                if (!me.error) startStudentSession(tk, me.data); else { try { sessionStorage.removeItem('santara_stoken'); } catch (e) { /* abaikan */ } }
             }
         };
 
@@ -497,9 +591,12 @@
         }
 
         function handleLogout() {
+            clearInterval(qrTimer); qrTimer = null;
             if (sb && mockState.currentRole === 'walikelas') sb.auth.signOut();
-            kaderToken = null; mockState.uid = null;
-            Object.assign(mockState, { students: [], permissions: [], violations: [], homeVisits: [], counseling: [], tokens: [] });
+            if (sb && studentToken) sb.rpc('student_logout', { p_token: studentToken });
+            studentToken = null; mockState.uid = null;
+            try { sessionStorage.removeItem('santara_stoken'); } catch (e) { /* abaikan */ }
+            Object.assign(mockState, { students: [], permissions: [], violations: [], homeVisits: [], counseling: [] });
             document.getElementById('loginPassword').value = ''; document.getElementById('loginUsername').value = '';
             if (activeHtml5QrCode) {
                 try {
@@ -586,7 +683,7 @@
                 sidebarHtml = `
                     <div class="text-[10px] uppercase tracking-wider text-teal-300 font-bold px-3 py-1">${isOfficer ? 'KADER PETUGAS QR' : 'MENU UTAMA SISWA'}</div>
                     <a href="#" onclick="renderView('dashboard')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'dashboard' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-house w-5"></i><span>Dashboard Pribadi</span></a>
-                    ${isOfficer ? `<a href="#" onclick="renderView('officerQRView')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'officerQRView' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-qrcode w-5 animate-pulse text-yellow-300"></i><span>Panel Relai QR Pos</span></a>` : ''}
+                    ${isOfficer ? `<a href="#" onclick="renderView('officerQRView')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'officerQRView' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-qrcode w-5 animate-pulse text-yellow-300"></i><span>Panel Relai / Tampilkan QR Code</span></a>` : ''}
                     <a href="#" onclick="renderView('scanQR')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'scanQR' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-camera w-5"></i><span>Scan QR Mandiri</span></a>
                     <a href="#" onclick="renderStudentProfileView(mockState.currentUser.id)" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'myProfile' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-id-card w-5"></i><span>Profil & Biodata</span></a>
                     <a href="#" onclick="renderView('myPermission')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'myPermission' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-file-pen w-5"></i><span>Ajukan Izin / Sakit</span></a>
@@ -604,6 +701,7 @@
                 drawerHtml = `
                     <button onclick="renderView('dashboard'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-house mr-2 text-santara-teal"></i>Dashboard</button>
                     <button onclick="renderView('scanQR'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-camera mr-2 text-santara-teal"></i>Scan QR</button>
+                    ${isOfficer ? `<button onclick="renderView('officerQRView'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-qrcode mr-2 text-santara-teal"></i>Relai QR</button>` : ''}
                     <button onclick="renderStudentProfileView(mockState.currentUser.id); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-id-card mr-2 text-santara-teal"></i>Profil & Biodata</button>
                     <button onclick="renderView('myPermission'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-file-pen mr-2 text-santara-teal"></i>Ajukan Izin</button>
                     <button onclick="handleLogout(); toggleMobileDrawer();" class="p-3 bg-red-50 rounded-2xl text-left border border-red-200 font-bold text-red-600 col-span-2"><i class="fa-solid fa-power-off mr-2"></i>Keluar Sistem</button>
@@ -621,6 +719,7 @@
         }
 
         function renderView(route) {
+            clearInterval(qrTimer); qrTimer = null;
             if (activeHtml5QrCode && route !== 'scanQR') {
                 try {
                     activeHtml5QrCode.stop().then(() => {
@@ -684,6 +783,7 @@
                             <span class="px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-xs font-bold tracking-wider uppercase inline-block">${mockState.schoolConfig.schoolName} • TP ${mockState.schoolConfig.academicYear}</span>
                             <h2 class="text-2xl md:text-3xl font-black tracking-tight">Dashboard Kelas ${mockState.schoolConfig.className}</h2>
                             <p class="text-xs md:text-sm text-blue-100 font-medium leading-relaxed">Selamat datang, ${mockState.schoolConfig.teacherName}. Sistem pemantauan kehadiran real-time dan manajemen kedisiplinan siswa siap melayani Anda hari ini.</p>
+                            <button onclick="sendAlfaLateRecap()" class="mt-2 px-4 py-2.5 bg-white text-santara-navy hover:bg-gray-100 rounded-2xl text-xs font-bold shadow-md transition inline-flex items-center space-x-2"><i class="fa-brands fa-whatsapp text-green-600 text-base"></i><span>Kirim Rekap Alfa & Terlambat</span></button>
                         </div>
                     </div>
 
@@ -729,6 +829,27 @@
                     </div>
                 </div>
             `;
+        }
+
+async function sendAlfaLateRecap() {
+            if (needSb()) return;
+            const unrec = mockState.students.filter(s => s.status === 'BELUM' && s.accountStatus === 'Aktif');
+            if (unrec.length && confirm(`${unrec.length} siswa belum tercatat hari ini. Tandai sebagai ALFA dan sertakan dalam rekap?`)) {
+                try {
+                    const rows = unrec.map(s => ({ student_id: s.id, att_date: todayISO(), status: 'ALFA', scan_time: '-', source: 'wali' }));
+                    const { error } = await sb.from('attendance').upsert(rows, { onConflict: 'student_id,att_date', ignoreDuplicates: true });
+                    if (error) throw error;
+                    await loadAll(); renderView('dashboard');
+                } catch (e) { showToast('Gagal Menyimpan', errMsg(e)); return; }
+            }
+            const alfa = mockState.students.filter(s => s.status === 'ALFA');
+            const late = mockState.students.filter(s => s.status === 'TERLAMBAT');
+            if (!alfa.length && !late.length) { showToast('Rekap Kosong', 'Tidak ada siswa Alfa atau Terlambat hari ini.'); return; }
+            const sc = mockState.schoolConfig;
+            const list = (arr, f) => arr.length ? arr.map((s, i) => `${i + 1}. ${unesc(s.name)}${f ? f(s) : ''}`).join('\n') : '-';
+            const msg = `*REKAP KEHADIRAN KELAS ${sc.className}*\n${tglPanjang()}\n\n*ALFA (${alfa.length}):*\n${list(alfa)}\n\n*TERLAMBAT (${late.length}):*\n${list(late, s => ` — pukul ${s.time}`)}\n\nMohon perhatian dan kerja samanya. Terima kasih.\n_Wali Kelas ${unesc(sc.teacherName)}_`;
+            openWaModal('Kirim Rekap Alfa & Terlambat', msg, `https://wa.me/?text=${encodeURIComponent(msg)}`,
+                '<p class="text-gray-500">Setelah WhatsApp terbuka, pilih grup kelas atau kontak wali murid tujuan.</p>');
         }
 
         function openStudentListModal(title, studentArray) {
@@ -810,6 +931,20 @@
                         </div>
                     </div>
 
+                    <div class="bg-white rounded-3xl p-6 border border-santara-border shadow-sm space-y-4">
+                        <div class="flex items-center space-x-2.5 border-b pb-3.5">
+                            <i class="fa-solid fa-calendar-check text-santara-teal text-lg"></i>
+                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Rekap Kehadiran Saya</h3>
+                        </div>
+                        <div class="grid grid-cols-5 gap-2 text-center">
+                            <div class="p-2.5 bg-green-50 rounded-xl border border-green-200"><span class="block text-[10px] text-green-800 font-bold">HADIR</span><span class="text-base font-black text-green-700">${(user.attendanceSummary || {}).hadir || 0}</span></div>
+                            <div class="p-2.5 bg-yellow-50 rounded-xl border border-yellow-200"><span class="block text-[10px] text-yellow-800 font-bold">TELAT</span><span class="text-base font-black text-yellow-700">${(user.attendanceSummary || {}).terlambat || 0}</span></div>
+                            <div class="p-2.5 bg-blue-50 rounded-xl border border-blue-200"><span class="block text-[10px] text-blue-800 font-bold">SAKIT</span><span class="text-base font-black text-blue-700">${(user.attendanceSummary || {}).sakit || 0}</span></div>
+                            <div class="p-2.5 bg-purple-50 rounded-xl border border-purple-200"><span class="block text-[10px] text-purple-800 font-bold">IZIN</span><span class="text-base font-black text-purple-700">${(user.attendanceSummary || {}).izin || 0}</span></div>
+                            <div class="p-2.5 bg-red-50 rounded-xl border border-red-200"><span class="block text-[10px] text-red-800 font-bold">ALFA</span><span class="text-base font-black text-red-700">${(user.attendanceSummary || {}).alfa || 0}</span></div>
+                        </div>
+                    </div>
+
                     <div class="bg-white rounded-3xl p-6 border border-red-200 shadow-sm space-y-4">
                         <div class="flex items-center justify-between border-b pb-3.5">
                             <div class="flex items-center space-x-2.5 text-red-600">
@@ -869,14 +1004,8 @@
                     </div>
                 </div>
             `;
-            setTimeout(() => {
-                const canvas = document.getElementById('qrCanvas');
-                if(canvas) {
-                    try {
-                        new QRious({ element: canvas, value: 'SANTARA-QR-XTSM4-' + Date.now(), size: 192 });
-                    } catch(e) { console.warn(e); }
-                }
-            }, 100);
+            startQrRotation('qrCanvas', 192, async () => { const r = await sb.rpc('teacher_qr_payload'); if (r.error) throw r.error; return r.data; });
+            
         }
 
         function saveQRSettings() {
@@ -976,7 +1105,6 @@
                         </div>
                     </div>
 
-                    ${tokenCardHtml()}
 
                     <div class="bg-white rounded-3xl border border-santara-border shadow-sm overflow-hidden">
                         <div class="overflow-x-auto">
@@ -996,6 +1124,7 @@
                                             <td class="p-3.5 font-bold text-santara-navy">
                                                 <span>${s.name}</span>
                                                 <span class="block text-[10px] text-gray-400 font-mono">NISN: ${s.nis}</span>
+                                                ${s.isQrOfficer ? '<span class="inline-block mt-1 px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded-full font-bold text-[10px]"><i class="fa-solid fa-qrcode mr-1"></i>Petugas QR</span>' : ''}
                                             </td>
                                             <td class="p-3.5 font-mono font-medium">${s.phone || '-'}</td>
                                             <td class="p-3.5">
@@ -1006,6 +1135,8 @@
                                             <td class="p-3.5 text-gray-500">${s.lastLogin || '-'}</td>
                                             <td class="p-3.5 text-right space-x-2 whitespace-nowrap">
                                                 <button onclick="openEditBiodataModal(${s.id})" class="px-3 py-1.5 bg-white border hover:bg-gray-100 text-santara-navy rounded-xl font-semibold text-[11px]">Edit</button>
+                                                <button onclick="toggleQrOfficer(${s.id})" class="px-3 py-1.5 bg-white border ${s.isQrOfficer ? 'border-yellow-300 text-yellow-700 hover:bg-yellow-50' : 'border-teal-200 text-santara-teal hover:bg-teal-50'} rounded-xl font-semibold text-[11px]">${s.isQrOfficer ? 'Cabut Petugas QR' : 'Jadikan Petugas QR'}</button>
+                                                <button onclick="resetStudentPassword(${s.id})" class="px-3 py-1.5 bg-white border hover:bg-gray-100 text-santara-navy rounded-xl font-semibold text-[11px]">Reset Password</button>
                                                 <button onclick="deleteStudent(${s.id})" class="px-3 py-1.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 rounded-xl font-semibold text-[11px]">Hapus</button>
                                                 <button onclick="toggleStudentAccountStatus('${s.nis}')" class="px-3 py-1.5 bg-white border ${s.accountStatus === 'Aktif' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-green-200 text-green-600 hover:bg-green-50'} rounded-xl font-semibold text-[11px]">
                                                     ${s.accountStatus === 'Aktif' ? 'Nonaktifkan' : 'Aktifkan'}
@@ -1118,41 +1249,22 @@
             run(async () => { const { error } = await sb.from('students').update({ is_active: st.accountStatus !== 'Aktif' }).eq('id', st.id); if (error) throw error; },
                 ['Status Diperbarui', `Status ${st.name} berhasil diubah.`], 'accounts');
         }
-        function tokenCardHtml() {
-            const rows = mockState.tokens.map(t => `
-                <div class="flex items-center justify-between bg-gray-50 border border-santara-border rounded-2xl px-4 py-3">
-                    <div><span class="font-mono font-black text-lg tracking-widest text-santara-navy">${t.token}</span>
-                    <span class="block text-[10px] text-gray-500">${t.label} • berlaku s/d ${t.expiresText}</span></div>
-                    <div class="space-x-2 whitespace-nowrap">
-                        <button onclick="copyToken('${t.token}')" class="px-3 py-1.5 bg-white border hover:bg-gray-100 text-santara-navy rounded-xl font-semibold text-[11px]">Salin</button>
-                        <button onclick="revokeToken(${t.id})" class="px-3 py-1.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 rounded-xl font-semibold text-[11px]">Cabut</button>
-                    </div>
-                </div>`).join('') || '<p class="text-xs text-gray-400">Belum ada token aktif.</p>';
-            return `
-                <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm space-y-4">
-                    <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                        <div>
-                            <h3 class="text-lg font-bold text-santara-navy">Token Akses Harian Kader QR</h3>
-                            <p class="text-xs text-santara-textSec mt-0.5">Bagikan token ke Siswa Kader untuk membuka pemindai QR. Berlaku sampai pukul 23:59 WIB hari ini.</p>
-                        </div>
-                        <button onclick="generateToken()" class="px-4 py-3 bg-santara-teal hover:bg-teal-800 text-white rounded-2xl text-xs font-bold transition shadow-md flex items-center space-x-2"><i class="fa-solid fa-key text-sm"></i><span>Buat Token Baru</span></button>
-                    </div>
-                    <div class="space-y-2">${rows}</div>
-                </div>`;
+        function toggleQrOfficer(id) {
+            const st = mockState.students.find(x => x.id === id);
+            if (!st) return;
+            const next = !st.isQrOfficer;
+            run(async () => { const { error } = await sb.from('students').update({ is_qr_officer: next }).eq('id', id); if (error) throw error; },
+                ['Penugasan Diperbarui', next ? `${unesc(st.name)} kini bertugas sebagai Petugas QR.` : `${unesc(st.name)} tidak lagi menjadi Petugas QR.`], 'accounts');
         }
-        function generateToken() {
-            const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', buf = new Uint32Array(8);
-            crypto.getRandomValues(buf);
-            const token = Array.from(buf, n => abc[n % abc.length]).join('');
-            run(async () => { const { error } = await sb.from('class_tokens').insert({ token, label: 'Kader QR', expires_at: `${todayISO()}T23:59:59+07:00` }); if (error) throw error; },
-                ['Token Dibuat', `Token ${token} aktif sampai 23:59 WIB.`], 'accounts');
-        }
-        function revokeToken(id) {
-            run(async () => { const { error } = await sb.from('class_tokens').update({ is_active: false }).eq('id', id); if (error) throw error; },
-                ['Berhasil', 'Token dicabut.'], 'accounts');
-        }
-        function copyToken(t) {
-            (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => showToast('Disalin', `Token ${t} disalin.`)).catch(() => showToast('Token', t));
+        function resetStudentPassword(id) {
+            const st = mockState.students.find(x => x.id === id);
+            if (!st) return;
+            const pw = prompt(`Password baru untuk ${unesc(st.name)} (min. 6 karakter).\nKosongkan untuk mengembalikan ke NISN:`);
+            if (pw === null) return;
+            const val = pw.trim() || st.nis;
+            if (val.length < 6) { showToast('Peringatan', 'Password minimal 6 karakter.'); return; }
+            run(async () => { const { error } = await sb.rpc('teacher_set_student_password', { p_student_id: id, p_password: val }); if (error) throw error; },
+                ['Password Direset', `Password ${unesc(st.name)} berhasil diperbarui.`], 'accounts');
         }
 
         function renderStudentProfileView(studentId) {
@@ -1286,7 +1398,7 @@
                         </div>
                         <div>
                             <label class="block font-bold mb-1">NIS / NISN</label>
-                            <input type="text" id="editNis" value="${s.nis}" class="w-full p-3 border rounded-xl">
+                            <input type="text" id="editNis" value="${s.nis}" ${mockState.currentRole === 'siswa' ? 'disabled' : ''} class="w-full p-3 border rounded-xl">
                         </div>
                     </div>
                     <div>
@@ -1305,6 +1417,16 @@
                         <label class="block font-bold mb-1">ALAMAT TEMPAT TINGGAL</label>
                         <input type="text" id="editAddress" value="${s.address || ''}" class="w-full p-3 border rounded-xl">
                     </div>
+                    ${mockState.currentRole === 'siswa' ? `<div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block font-bold mb-1">JENIS KELAMIN</label>
+                            <select id="editGender" class="w-full p-3 border rounded-xl"><option value="L" ${s.gender === 'L' ? 'selected' : ''}>Laki-laki</option><option value="P" ${s.gender === 'P' ? 'selected' : ''}>Perempuan</option></select>
+                        </div>
+                        <div>
+                            <label class="block font-bold mb-1">PASSWORD BARU</label>
+                            <input type="password" id="editNewPw" autocomplete="new-password" placeholder="Kosongkan jika tidak diganti" class="w-full p-3 border rounded-xl">
+                        </div>
+                    </div>` : ''}
                     <button onclick="saveStudentBiodata(${s.id})" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan Perubahan Data</button>
                 </div>
             `;
@@ -1313,6 +1435,22 @@
         }
 
         function saveStudentBiodata(studentId) {
+            if (mockState.currentRole === 'siswa') {
+                const g = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+                const pw = g('editNewPw');
+                if (pw && pw.length < 6) { showToast('Peringatan', 'Password baru minimal 6 karakter.'); return; }
+                const fi = document.getElementById('localAvatarFile');
+                const saveSelf = (avatar) => {
+                    run(async () => {
+                        let r = await sb.rpc('student_update_profile', { p_token: studentToken, p_name: g('editName'), p_gender: g('editGender'), p_phone: g('editPhone'), p_parent: g('editParent'), p_parent_phone: g('editParentPhone'), p_address: g('editAddress'), p_avatar: avatar || null });
+                        if (r.error) throw r.error;
+                        if (pw) { r = await sb.rpc('student_change_password', { p_token: studentToken, p_new: pw }); if (r.error) throw r.error; }
+                        closeModal();
+                    }, ['Berhasil', 'Biodata berhasil diperbarui.']).then(ok => { if (ok) { syncSidebarUser(); renderStudentProfileView(studentId); } });
+                };
+                if (fi && fi.files && fi.files[0]) compressImage(fi.files[0], 320, saveSelf); else saveSelf(null);
+                return;
+            }
             const fileInput = document.getElementById('localAvatarFile');
             const nameEl = document.getElementById('editName'), nisEl = document.getElementById('editNis');
             const upd = { phone: document.getElementById('editPhone').value, parent: document.getElementById('editParent').value, parent_phone: document.getElementById('editParentPhone').value, address: document.getElementById('editAddress').value };
@@ -1420,11 +1558,15 @@
                             </div>
                             <div>
                                 <label class="block font-bold mb-1.5 uppercase text-gray-600">TANGGAL IZIN</label>
-                                <input type="date" id="myPermDate" class="w-full p-3.5 border border-santara-border rounded-2xl font-medium bg-gray-50 focus:bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none" value="2026-10-14">
+                                <input type="date" id="myPermDate" class="w-full p-3.5 border border-santara-border rounded-2xl font-medium bg-gray-50 focus:bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none" value="${todayISO()}">
                             </div>
                             <div>
                                 <label class="block font-bold mb-1.5 uppercase text-gray-600">ALASAN / KETERANGAN</label>
                                 <textarea id="myPermReason" class="w-full p-3.5 border border-santara-border rounded-2xl font-medium bg-gray-50 focus:bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none" rows="3" placeholder="Sebutkan alasan izin secara jelas..."></textarea>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1.5 uppercase text-gray-600">KIRIMKAN BUKTI</label>
+                                <input type="file" id="myPermFile" accept="image/*,application/pdf" class="w-full p-3 border border-santara-border rounded-2xl font-medium bg-gray-50 text-xs">
                             </div>
                             <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 text-xs text-amber-900 flex items-start space-x-2.5">
                                 <i class="fa-brands fa-whatsapp text-green-600 text-lg mt-0.5 shrink-0"></i>
@@ -1444,35 +1586,27 @@
 
         function submitMyPermissionWhatsApp() {
             const category = document.getElementById('myPermCat').value;
-            const date = document.getElementById('myPermDate').value;
-            const reason = document.getElementById('myPermReason').value;
-
-            if(!reason) {
-                showToast('Peringatan', 'Alasan wajib diisi.');
-                return;
-            }
-
-            mockState.permissions.unshift({
-                id: Date.now(),
-                studentName: mockState.currentUser.name,
-                nis: mockState.currentUser.nis,
-                category,
-                date: date || '14 Okt 2026',
-                reason,
-                status: 'PENDING',
-                evidenceType: 'whatsapp',
-                evidenceUrl: `https://wa.me/${mockState.schoolConfig.teacherPhone}`
-            });
-
-            const message = `Assalamualaikum ${mockState.schoolConfig.teacherName}.\n\nSaya siswa atas nama *${mockState.currentUser.name}* (NISN: ${mockState.currentUser.nis}), kelas ${mockState.schoolConfig.className} mengajukan izin *${category}* pada tanggal ${date || 'hari ini'} dengan alasan:\n"${reason}"\n\n*(Berikut saya lampirkan foto surat dokter/bukti izin)*`;
-            const waUrl = `https://wa.me/${mockState.schoolConfig.teacherPhone}?text=${encodeURIComponent(message)}`;
-
-            showToast('Berhasil Dikirim', 'Pengajuan tercatat di sistem. Membuka WhatsApp Wali Kelas...');
-            
-            setTimeout(() => {
-                window.open(waUrl, '_blank');
-                renderView('dashboard');
-            }, 1000);
+            const date = document.getElementById('myPermDate').value || todayISO();
+            const reason = document.getElementById('myPermReason').value.trim();
+            const file = (document.getElementById('myPermFile').files || [])[0];
+            if (!reason) { showToast('Peringatan', 'Alasan wajib diisi.'); return; }
+            if (needSb()) return;
+            const cu = mockState.currentUser, sc = mockState.schoolConfig;
+            const w = window.open('', '_blank');   // dibuka lebih dulu agar tidak diblokir browser
+            const lampiran = file
+                ? `${file.name} (${file.type || 'berkas'}, ${Math.max(1, Math.round(file.size / 1024))} KB) — akan saya lampirkan langsung pada chat ini.`
+                : 'Foto/dokumen bukti akan saya lampirkan langsung pada chat ini.';
+            const message = `Assalamualaikum Wr. Wb. ${sc.teacherName},\n\nSaya siswa atas nama *${cu.name}* (NISN: ${cu.nis}), kelas ${sc.className}, mengajukan *${category}* untuk tanggal ${fmtDate(date)}.\n\n*Alasan / Keterangan:*\n${reason}\n\n*Lampiran Bukti:*\n${lampiran}\n\nMohon verifikasinya. Terima kasih.`;
+            (async () => {
+                try {
+                    const { error } = await sb.rpc('student_submit_permission', { p_token: studentToken, p_category: category, p_date: date, p_reason: reason });
+                    if (error) throw error;
+                    await refreshData();
+                    showToast('Berhasil Dikirim', 'Pengajuan tercatat di sistem. Membuka WhatsApp Wali Kelas...');
+                    const url = `https://wa.me/${waNum(sc.teacherPhone)}?text=${encodeURIComponent(message)}`;
+                    if (w) { w.location.href = url; renderView('dashboard'); } else { window.location.href = url; }
+                } catch (e) { if (w) w.close(); showToast('Gagal', errMsg(e)); }
+            })();
         }
 
         function renderScanQRView(container) {
@@ -1496,7 +1630,7 @@
                         <div class="mt-6 space-y-3">
                             <button onclick="manualScanPrompt()" class="w-full py-4 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 text-white font-bold rounded-2xl text-xs uppercase tracking-wider shadow-xl transition flex items-center justify-center space-x-2">
                                 <i class="fa-solid fa-bolt text-yellow-300 text-sm"></i>
-                                <span>INPUT NISN MANUAL</span>
+                                <span>INPUT KODE QR MANUAL</span>
                             </button>
                         </div>
                     </div>
@@ -1538,20 +1672,22 @@
         }
 
         async function recordScan(text) {
-            const nis = String(text).replace(/^SANTARA[-:]?(NIS[-:]?)?/i, '').trim();
-            if (!nis || !kaderToken || needSb()) return;
+            const code = String(text).trim();
+            if (!code || !studentToken || needSb()) return;
             const now = Date.now();
-            if (lastScan.nis === nis && now - lastScan.at < 4000) return;   // cegah scan ganda beruntun
-            lastScan = { nis, at: now };
+            if (lastScan.nis === code && now - lastScan.at < 4000) return;   // cegah scan ganda beruntun
+            lastScan = { nis: code, at: now };
             try {
-                const { data, error } = await sb.rpc('kader_scan', { p_token: kaderToken, p_nis: nis });
+                const { data, error } = await sb.rpc('student_scan', { p_token: studentToken, p_payload: code });
                 if (error) throw error;
                 showToast('Absensi Berhasil', `${data.name} • ${data.status} pukul ${data.time}`);
+                await refreshData();
+                stopCameraAndBack();
             } catch (e) { showToast('Gagal', errMsg(e)); }
         }
         function manualScanPrompt() {
-            const nis = prompt('Masukkan NISN siswa:');
-            if (nis) recordScan(nis);
+            const code = prompt('Tempelkan kode QR yang tampil di layar Petugas / Wali Kelas:');
+            if (code) recordScan(code);
         }
 
         function renderOfficerQRView(container) {
@@ -1571,14 +1707,8 @@
                     </div>
                 </div>
             `;
-            setTimeout(() => {
-                const canvas = document.getElementById('officerQrCanvas');
-                if(canvas) {
-                    try {
-                        new QRious({ element: canvas, value: 'SANTARA-OFFICER-RELAY-' + Date.now(), size: 240 });
-                    } catch(e) { console.warn(e); }
-                }
-            }, 100);
+            startQrRotation('officerQrCanvas', 240, async () => { const r = await sb.rpc('student_qr_payload', { p_token: studentToken }); if (r.error) throw r.error; return r.data; });
+            
         }
 
         function renderCariCetakIndivView(container) {
@@ -2246,7 +2376,29 @@
             const student = mockState.students.find(x => x.id === studId);
             if(!violation || !student) { showToast('Peringatan', 'Deskripsi pelanggaran wajib diisi.'); return; }
             run(async () => { const { error } = await sb.from('violations').insert({ student_id: studId, violation, category, points: -Math.abs(points), action: action || 'Pembinaan wali kelas' }); if (error) throw error; closeModal(); },
-                ['Berhasil Tercatat', `Pelanggaran ${student.name} berhasil disimpan & poin dikurangi.`], 'violations');
+                ['Berhasil Tercatat', `Pelanggaran ${student.name} berhasil disimpan & poin dikurangi.`], 'violations').then(ok => { if (ok) openViolationWaModal(studId, violation, category, Math.abs(points), action || 'Pembinaan wali kelas'); });
+        }
+
+        function openViolationWaModal(studId, violation, category, pts, action) {
+            const st = mockState.students.find(x => x.id === studId);
+            if (!st) return;
+            const sc = mockState.schoolConfig;
+            const sisa = getStudentPoints(st);
+            const msg = `Assalamualaikum Wr. Wb. Bapak/Ibu ${unesc(st.parent)},
+
+Kami informasikan catatan kedisiplinan ananda *${unesc(st.name)}* (NISN: ${st.nis}, kelas ${sc.className}):
+
+• Bentuk pelanggaran: ${violation}
+• Kategori: ${category}
+• Pengurangan poin: -${pts}
+• Sisa poin karakter: ${sisa} / 100
+• Tindakan pembinaan: ${action}
+
+Mohon kerja sama Bapak/Ibu dalam pembinaan ananda. Terima kasih.
+_Wali Kelas ${unesc(sc.teacherName)}_`;
+            const num = waNum(st.parentPhone);
+            const note = num ? '' : '<div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold">Nomor WhatsApp orang tua belum diisi. Anda tetap dapat memilih kontak secara manual di WhatsApp.</div>';
+            openWaModal(`Kirim Notifikasi ke WhatsApp Orang Tua ${unesc(st.name)}?`, msg, `https://wa.me/${num}?text=${encodeURIComponent(msg)}`, note);
         }
 
         function deleteViolation(id) {
