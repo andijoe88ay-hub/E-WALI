@@ -35,6 +35,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Supabase JS SDK (versi dipin) -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <!-- QRious for QR Generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
     <!-- html5-qrcode for Camera Scanning -->
@@ -69,12 +70,13 @@
             <div class="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-white/20 my-auto">
                 <div class="bg-gradient-to-r from-santara-navy to-santara-teal p-8 text-white text-center relative">
                     <div class="absolute top-4 right-4 bg-white/20 px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase">TP 2026/2027</div>
-                    <div class="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-white/30 shadow-inner">
+                    <div id="logoLogin" class="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-white/30 shadow-inner overflow-hidden">
                         <i class="fa-solid fa-graduation-cap text-3xl text-white"></i>
                     </div>
                     <h1 class="text-2xl font-extrabold tracking-wide">SANTARA</h1>
                     <p class="text-xs text-blue-100 mt-1 font-medium">Sistem Administrasi Terpadu Wali Kelas</p>
                     <p class="text-[11px] text-teal-200 mt-0.5">SMK NU 01 Kendal • Kelas X TSM 4</p>
+                    <img id="logoSekolahLogin" alt="Logo sekolah" class="hidden w-12 h-12 object-contain mx-auto mt-3 bg-white/90 rounded-full p-1">
                 </div>
                 <div class="p-6 md:p-8 space-y-5">
                     <div class="space-y-4">
@@ -118,10 +120,10 @@
             <aside id="sidebar" class="hidden md:flex w-64 bg-santara-navy text-white flex-col no-print z-25 shadow-xl">
                 <div class="p-4 border-b border-white/10 flex items-center justify-between">
                     <div class="flex items-center space-x-3 cursor-pointer" onclick="toggleMobileDrawer()">
-                        <div class="w-10 h-10 bg-santara-teal rounded-xl flex items-center justify-center font-extrabold text-sm shadow-inner">ST</div>
+                        <div id="logoSidebar" class="w-10 h-10 bg-santara-teal rounded-xl flex items-center justify-center font-extrabold text-sm shadow-inner overflow-hidden">ST</div>
                         <div>
                             <h2 class="font-bold text-sm tracking-wide leading-tight">SANTARA</h2>
-                            <p class="text-[9px] text-teal-300 font-semibold tracking-wider">SMK NU 01 KENDAL</p>
+                            <p class="text-[9px] text-teal-300 font-semibold tracking-wider"><img id="logoSekolahSidebar" alt="" class="hidden w-4 h-4 object-contain inline-block mr-1 bg-white rounded-full p-0.5 align-middle">SMK NU 01 KENDAL</p>
                         </div>
                     </div>
                 </div>
@@ -144,7 +146,7 @@
                 <header class="h-16 bg-white/90 backdrop-blur-md border-b border-santara-border px-4 md:px-6 flex items-center justify-between no-print z-20 shadow-xs">
                     <div class="flex items-center space-x-3">
                         <div class="flex items-center space-x-2.5 cursor-pointer" onclick="toggleMobileDrawer()">
-                            <div class="w-9 h-9 bg-santara-teal text-white rounded-xl flex items-center justify-center font-bold text-xs shadow-md">ST</div>
+                            <div id="logoTopbar" class="w-9 h-9 bg-santara-teal text-white rounded-xl flex items-center justify-center font-bold text-xs shadow-md overflow-hidden">ST</div>
                             <span class="font-black text-santara-navy text-sm tracking-tight">SANTARA</span>
                         </div>
                         <div class="hidden md:block">
@@ -231,6 +233,10 @@
         // KONFIGURASI SUPABASE — ISI DUA NILAI INI (Supabase > Project Settings > API)
         // =====================================================================
         const SUPABASE_URL = 'https://llalvnlzwfuywtysitjg.supabase.co';
+        // LOGO (opsional): unggah file gambar ke folder yang sama dengan index.html, lalu isi nama filenya di sini.
+        // Contoh: const LOGO_SANTARA_URL = 'logo-santara.png';  const LOGO_SEKOLAH_URL = 'logo-sekolah.png';
+        const LOGO_SANTARA_URL = '';
+        const LOGO_SEKOLAH_URL = '';
         const SUPABASE_ANON_KEY = 'sb_publishable_9Ko7suUCCY44TuB9yuT0Cg_V9q6s7Jw';
         // anon key AMAN dipublikasikan; data dilindungi RLS di database.
         const sb = (window.supabase && !SUPABASE_URL.includes('GANTI-DENGAN') && !SUPABASE_ANON_KEY.includes('GANTI-DENGAN'))
@@ -270,6 +276,8 @@
             if (/BUKAN_PETUGAS/.test(m)) return 'Anda belum ditugaskan sebagai Petugas QR.';
             if (/PASSWORD_PENDEK/.test(m)) return 'Password minimal 6 karakter.';
             if (/ALASAN_KOSONG/.test(m)) return 'Alasan wajib diisi.';
+            if (/SUDAH_IZIN/.test(m)) return 'Anda sudah mengajukan izin/sakit hari ini, sehingga tidak dapat absen QR.';
+            if (/SUDAH_HADIR/.test(m)) return 'Anda sudah absen (hadir/terlambat) pada tanggal tersebut, sehingga tidak dapat mengajukan izin/sakit.';
             if (/SUDAH_ABSEN/.test(m)) return 'Anda sudah tercatat absen hari ini (maksimal 1x per hari).';
             if (/IZIN_SUDAH_ADA/.test(m)) return 'Pengajuan izin/sakit untuk tanggal tersebut sudah ada (maksimal 1x per tanggal).';
             if (/LINK_INVALID/.test(m)) return 'Link Google Maps tidak valid.';
@@ -318,7 +326,7 @@
             const res = await Promise.all([
                 sb.from('profiles').select('*').eq('id', uid).maybeSingle(),
                 sb.from('students').select('*').order('nis'),
-                fetchAllRows(() => sb.from('attendance').select('student_id,att_date,status,scan_time,created_at').order('att_date', { ascending: false }).order('id', { ascending: false })),
+                fetchAllRows(() => sb.from('attendance').select('student_id,att_date,status,scan_time,created_at,updated_at').order('att_date', { ascending: false }).order('id', { ascending: false })),
                 q('violations'), q('counseling'), q('home_visits'), q('permissions')
             ]);
             res.forEach(r => { if (r.error) throw r.error; });
@@ -332,8 +340,9 @@
             Object.assign(sc, { schoolName: prof.school_name, department: prof.department, className: prof.class_name, academicYear: prof.academic_year, principalName: prof.principal_name, principalNip: prof.principal_nip, teacherName: prof.teacher_name, teacherNip: prof.teacher_nip, teacherPhone: prof.teacher_phone, address: prof.address, avatar: prof.avatar || DEFAULT_AVATAR });
             mockState.qrSettings.startTime = prof.qr_start;
             mockState.qrSettings.toleranceTime = prof.qr_tolerance;
+            mockState.conditionLabels = prof.condition_labels || {};
 
-            mockState.attendanceRows = res[2].data.map(a => ({ sid: a.student_id, date: a.att_date, status: a.status, createdAt: a.created_at }));
+            mockState.attendanceRows = res[2].data.map(a => ({ sid: a.student_id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at, updatedAt: a.updated_at }));
             const today = todayISO();
             const sum = {}, todayRow = {};
             res[2].data.forEach(a => {
@@ -344,15 +353,15 @@
             const byId = {};
             mockState.students = res[1].data.map(r => {
                 const t = todayRow[r.id];
-                const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
+                const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer, conditionStatus: r.condition_status || null, createdAt: r.created_at, updatedAt: r.updated_at,
                     status: t ? t.status : 'BELUM', time: t ? t.scan_time : '-', attendanceSummary: sum[r.id] || { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 },
                     username: r.nis, accountStatus: r.is_active ? 'Aktif' : 'Nonaktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
                 byId[r.id] = st; return st;
             });
             const who = id => byId[id] || { name: 'Siswa (dihapus)', nis: '-' };
             mockState.violations = res[3].data.map(r => ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.vio_date), violation: esc(r.violation), category: r.category, points: r.points, action: esc(r.action) }));
-            mockState.counseling = res[4].data.map(r => ({ id: r.id, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
-            mockState.homeVisits = res[5].data.map(r => ({ id: r.id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: r.evidence_url }));
+            mockState.counseling = res[4].data.map(r => ({ id: r.id, createdAt: r.created_at, rawDate: r.c_date, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
+            mockState.homeVisits = res[5].data.map(r => ({ id: r.id, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: r.evidence_url }));
             mockState.permissions = res[6].data.map(r => ({ id: r.id, studentId: r.student_id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, category: r.category, date: fmtDate(r.perm_date), rawDate: r.perm_date, reason: esc(r.reason), status: r.status, evidenceType: 'whatsapp', evidenceUrl: r.evidence_url || `https://wa.me/${sc.teacherPhone}` }));
             recalculateStats();
         }
@@ -513,6 +522,13 @@
                         <label class="block font-bold mb-1">HASIL / KESEPAKATAN</label>
                         <input type="text" id="ivResult" value="Siswa kooperatif" class="w-full p-3 border rounded-xl">
                     </div>
+                    <div>
+                        <label class="block font-bold mb-1">TETAPKAN KONDISI SISWA (OPSIONAL)</label>
+                        <select id="ivCond" class="w-full p-3 border rounded-xl">
+                            <option value="">Tidak diubah</option>
+                            ${COND_KEYS.map(k => `<option value="${k}">${esc(condLabels()[k])}</option>`).join('')}
+                        </select>
+                    </div>
                     <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
                         <button onclick="submitIntervention(${st.id})" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md"><i class="fa-solid fa-circle-check mr-1"></i>Simpan & Tandai Selesai</button>
                     </div>
@@ -528,7 +544,12 @@
             if (!uraian) { showToast('Peringatan', 'Uraian masalah wajib diisi.'); return; }
             const row = { student_id: id, category: 'Tindak Lanjut Early Warning', description: `[${g('ivType')}] ${uraian}`,
                 action: g('ivAction').trim() || 'Pembinaan wali kelas', result: g('ivResult').trim() || 'Siswa kooperatif', status: 'SELESAI' };
-            run(async () => { const { error } = await sb.from('counseling').insert(row); if (error) throw error; closeModal(); },
+            const cond = g('ivCond');
+            run(async () => {
+                const { error } = await sb.from('counseling').insert(row); if (error) throw error;
+                if (cond) { const r2 = await sb.from('students').update({ condition_status: cond }).eq('id', id); if (r2.error) throw r2.error; }
+                closeModal();
+            },
                 ['Alert Diselesaikan', `Tindak lanjut ${unesc(st.name)} tersimpan. Alert dihapus dari daftar aktif.`], 'dashboard');
         }
 
@@ -566,97 +587,387 @@
                 </div>`;
         }
 
-        // ---------- Analitik dashboard wali ----------
-        let anRange = null;
-        function anDefaultRange() { const t = todayISO(); return { from: t.slice(0, 8) + '01', to: t }; }
-        function anPreset(p) {
-            const t = todayISO();
-            if (p === 'all') anRange = { from: '2000-01-01', to: t };
-            else if (p === 'month') anRange = anDefaultRange();
-            else { const d = new Date(t + 'T00:00:00'); d.setDate(d.getDate() - (p - 1)); anRange = { from: d.toLocaleDateString('en-CA'), to: t }; }
-            renderAnalytics();
+        // ---------- Analitik dashboard wali (data langsung dari database) ----------
+        const STATUS_KEYS = ['HADIR', 'TERLAMBAT', 'SAKIT', 'IZIN', 'ALFA'];
+        const STATUS_META = { HADIR: { label: 'Hadir', color: '#22c55e' }, TERLAMBAT: { label: 'Terlambat', color: '#eab308' }, SAKIT: { label: 'Sakit', color: '#3b82f6' }, IZIN: { label: 'Izin', color: '#a855f7' }, ALFA: { label: 'Alpha', color: '#ef4444' } };
+        const COND_KEYS = ['baik', 'perhatian', 'khusus', 'pembinaan'];
+        const COND_BAR = { baik: 'bg-green-500', perhatian: 'bg-amber-500', khusus: 'bg-purple-500', pembinaan: 'bg-blue-500', none: 'bg-gray-300' };
+        const charts = { trend: null, donut: null };
+        let trendState = { mode: '7', from: '', to: '' };
+        let donutMode = 'daily';
+        let top5Mode = 'all';
+
+        function dateAddDays(iso, n) { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+        function round1(n) { return Math.round(n * 10) / 10; }
+        function normKey(v) { return String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' '); }
+        function studentById(id) { return mockState.students.find(x => x.id === id); }
+        function studentByNis(nis) { return mockState.students.find(x => x.nis === nis); }
+        function fmtRel(ts) {
+            const t = Date.parse(ts); if (!t) return '-';
+            const m = Math.floor((Date.now() - t) / 60000);
+            if (m < 1) return 'baru saja';
+            if (m < 60) return `${m} menit lalu`;
+            if (m < 1440) return `${Math.floor(m / 60)} jam lalu`;
+            if (m < 10080) return `${Math.floor(m / 1440)} hari lalu`;
+            return new Date(t).toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'short', year: 'numeric' });
         }
-        function anApply() {
-            const f = (document.getElementById('anFrom') || {}).value, t = (document.getElementById('anTo') || {}).value;
-            if (!f || !t) return;
-            anRange = f <= t ? { from: f, to: t } : { from: t, to: f };
-            renderAnalytics();
+        function fmtAbs(ts) { const t = Date.parse(ts); return t ? new Date(t).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' WIB' : '-'; }
+        function condLabels() { return Object.assign({ baik: 'Baik', perhatian: 'Perlu Perhatian', khusus: 'Khusus', pembinaan: 'Dalam Pembinaan' }, mockState.conditionLabels || {}); }
+        function chartsReady() { return typeof Chart !== 'undefined'; }
+        function destroyChart(k) { if (charts[k]) { charts[k].destroy(); charts[k] = null; } }
+
+        // Catatan valid = catatan absensi berstatus 5 kategori milik siswa yang ada di kelas. 1 catatan = 1 siswa pada 1 hari.
+        function validRecords() {
+            const map = {}; mockState.students.forEach(x => { map[x.id] = x; });
+            return (mockState.attendanceRows || []).filter(a => STATUS_KEYS.includes(a.status) && map[a.sid]).map(a => ({ ...a, st: map[a.sid] }));
         }
+        function countStatus(recs) { const c = { HADIR: 0, TERLAMBAT: 0, SAKIT: 0, IZIN: 0, ALFA: 0 }; recs.forEach(r => { c[r.status]++; }); return c; }
+        // Persentase kehadiran = (Hadir + Terlambat) / total catatan valid. Konsisten di semua grafik.
+        function hadirPct(c, total) { return total ? round1((c.HADIR + c.TERLAMBAT) * 100 / total) : null; }
+
+        function panelCard(inner, extra) { return `<div class="bg-white rounded-3xl border border-santara-border shadow-sm p-5 md:p-6 space-y-4 ${extra || ''}">${inner}</div>`; }
+        function panelHead(icon, tone, title, sub, right) {
+            return `<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3.5">
+                <div class="flex items-center space-x-2.5"><span class="w-9 h-9 rounded-xl ${tone} flex items-center justify-center"><i class="fa-solid ${icon}"></i></span>
+                <div><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">${title}</h3>${sub ? `<p class="text-[11px] text-santara-textSec">${sub}</p>` : ''}</div></div>
+                ${right || ''}</div>`;
+        }
+        function tabBtn(label, active, onclick) {
+            return `<button onclick="${onclick}" class="px-3 py-1.5 rounded-xl text-[11px] font-bold border ${active ? 'bg-santara-navy text-white border-santara-navy' : 'bg-gray-50 text-santara-navy border-santara-border hover:bg-gray-100'}">${label}</button>`;
+        }
+        function emptyBox(icon, text) { return `<div class="text-center py-10 text-xs text-gray-500"><i class="fa-solid ${icon} text-3xl text-gray-300 mb-2 block"></i>${text}</div>`; }
+        function safePanel(id, fn) {
+            try { fn(); } catch (e) {
+                console.error(id, e);
+                const el = document.getElementById(id);
+                if (el) el.innerHTML = panelCard(`<div class="text-center py-8 text-xs text-red-600"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2 block"></i>Panel ini gagal dimuat.<br><button onclick="renderAnalytics()" class="mt-3 px-4 py-2 bg-red-50 border border-red-200 rounded-xl font-bold">Coba Lagi</button></div>`);
+            }
+        }
+
+        function openListModal(title, subHtml, itemsHtml) {
+            const modal = document.getElementById('modalContainer');
+            const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between">
+                    <h3 class="font-bold text-sm">${title}</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+                <div class="p-5 space-y-3 text-xs flex-1 min-h-0 overflow-y-auto">
+                    ${subHtml ? `<p class="text-gray-500 font-medium">${subHtml}</p>` : ''}
+                    <div class="divide-y divide-gray-100">${itemsHtml || '<p class="text-gray-400 py-6 text-center">Tidak ada data.</p>'}</div>
+                </div>`;
+            modal.classList.add('flex');
+            modal.classList.remove('hidden');
+        }
+        function openStudentFromModal(id) { closeModal(); renderStudentProfileView(id); }
+        function openAttendanceDetail(title, recs) {
+            const sorted = recs.slice().sort((a, b) => b.date.localeCompare(a.date) || String(a.st.name).localeCompare(String(b.st.name)));
+            const items = sorted.map(r => `<div class="flex items-center justify-between py-2.5 gap-3">
+                <button onclick="openStudentFromModal(${r.st.id})" class="text-left min-w-0"><span class="block font-bold text-santara-navy truncate">${r.st.name}</span><span class="block text-[10px] text-gray-400">${fmtDate(r.date)}${r.time && r.time !== '-' ? ' • ' + r.time : ''}</span></button>
+                <span class="px-2.5 py-1 rounded-full text-[10px] font-extrabold text-white shrink-0" style="background:${STATUS_META[r.status].color}">${STATUS_META[r.status].label}</span></div>`).join('');
+            openListModal(title, `${sorted.length} catatan kehadiran`, items);
+        }
+
         function renderAnalytics() {
             const box = document.getElementById('analyticsBox');
             if (!box) return;
-            if (!anRange) anRange = anDefaultRange();
-            const { from, to } = anRange;
-            const rows = (mockState.attendanceRows || []).filter(a => a.date >= from && a.date <= to);
-            const cnt = { HADIR: 0, TERLAMBAT: 0, SAKIT: 0, IZIN: 0, ALFA: 0 };
-            rows.forEach(a => { if (cnt[a.status] != null) cnt[a.status]++; });
-            const total = rows.length;
-            const pct = n => total ? Math.round(n * 1000 / total) / 10 : 0;
-            const meta = { HADIR: ['Hadir', 'bg-green-500', 'text-green-700 bg-green-50 border-green-200'], TERLAMBAT: ['Terlambat', 'bg-yellow-400', 'text-yellow-700 bg-yellow-50 border-yellow-200'],
-                SAKIT: ['Sakit', 'bg-blue-500', 'text-blue-700 bg-blue-50 border-blue-200'], IZIN: ['Izin', 'bg-purple-500', 'text-purple-700 bg-purple-50 border-purple-200'], ALFA: ['Alfa', 'bg-red-500', 'text-red-700 bg-red-50 border-red-200'] };
-            const tiles = Object.keys(meta).map(k => `<div class="p-3 rounded-2xl border ${meta[k][2]} text-center"><span class="block text-[10px] font-bold uppercase">${meta[k][0]}</span><span class="text-xl font-black">${cnt[k]}</span><span class="block text-[10px] font-semibold opacity-70">${pct(cnt[k])}%</span></div>`).join('');
-            const stack = total ? Object.keys(meta).filter(k => cnt[k]).map(k => `<div class="${meta[k][1]} h-full" style="width:${pct(cnt[k])}%" title="${meta[k][0]} ${pct(cnt[k])}%"></div>`).join('') : '';
-            // siswa dengan alfa/terlambat terbanyak pada rentang
-            const per = {};
-            rows.forEach(a => { if (a.status === 'ALFA' || a.status === 'TERLAMBAT') { const m = per[a.sid] || (per[a.sid] = { alfa: 0, late: 0 }); if (a.status === 'ALFA') m.alfa++; else m.late++; } });
-            const top = Object.keys(per).map(id => ({ st: mockState.students.find(x => x.id === Number(id)), ...per[id] })).filter(x => x.st)
-                .sort((a, b) => b.alfa - a.alfa || b.late - a.late).slice(0, 5);
-            const topHtml = top.length ? top.map(x => `<div class="flex items-center justify-between text-xs py-1.5 border-b last:border-0"><span class="font-semibold text-santara-navy truncate pr-2">${x.st.name}</span><span class="shrink-0 space-x-1.5"><span class="px-2 py-0.5 rounded-full bg-red-50 text-red-700 font-bold text-[10px]">Alfa ${x.alfa}</span><span class="px-2 py-0.5 rounded-full bg-yellow-50 text-yellow-700 font-bold text-[10px]">Telat ${x.late}</span></span></div>`).join('')
-                : '<p class="text-xs text-gray-400 py-2">Tidak ada alfa/terlambat pada rentang ini.</p>';
-            // pelanggaran
-            const vios = mockState.violations.filter(v => v.rawDate >= from && v.rawDate <= to);
-            const totalPts = vios.reduce((n, v) => n + Math.abs(v.points || 0), 0);
-            const affected = new Set(vios.map(v => v.nis)).size;
-            const act = mockState.students.filter(x => x.accountStatus === 'Aktif');
-            const avgPts = act.length ? Math.round(act.reduce((n, x) => n + getStudentPoints(x), 0) / act.length) : 100;
-            const groups = {};
-            vios.forEach(v => { const k = String(v.violation).trim().toLowerCase(); (groups[k] || (groups[k] = { label: v.violation, n: 0 })).n++; });
-            const sorted = Object.values(groups).sort((a, b) => b.n - a.n);
-            const topCat = sorted.slice(0, 5);
-            const rest = sorted.slice(5).reduce((n, g) => n + g.n, 0);
-            if (rest) topCat.push({ label: 'Lainnya', n: rest });
-            const maxN = topCat.length ? Math.max(...topCat.map(g => g.n)) : 1;
-            const catHtml = topCat.length ? topCat.map(g => `<div><div class="flex justify-between text-xs mb-1"><span class="font-semibold text-santara-navy truncate pr-2">${g.label}</span><span class="font-bold text-gray-500 shrink-0">${g.n}x (${Math.round(g.n * 100 / vios.length)}%)</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-santara-teal to-santara-blue" style="width:${Math.round(g.n * 100 / maxN)}%"></div></div></div>`).join('')
-                : '<p class="text-xs text-gray-400 py-2">Belum ada pelanggaran pada rentang ini.</p>';
-            const sev = { Ringan: 0, Sedang: 0, Berat: 0 };
-            vios.forEach(v => { if (sev[v.category] != null) sev[v.category]++; });
-            const preset = (label, p) => `<button onclick="anPreset(${typeof p === 'string' ? `'${p}'` : p})" class="px-3 py-1.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-[11px] font-bold text-santara-navy">${label}</button>`;
             box.innerHTML = `
-                <div class="bg-white rounded-3xl border border-santara-border shadow-sm p-5 md:p-6 space-y-5">
-                    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b pb-3.5">
-                        <div class="flex items-center space-x-2.5">
-                            <span class="w-9 h-9 rounded-xl bg-teal-50 text-santara-teal flex items-center justify-center"><i class="fa-solid fa-chart-column"></i></span>
-                            <div><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Statistik Kehadiran & Pelanggaran</h3>
-                            <p class="text-[11px] text-santara-textSec">Pilih rentang tanggal untuk merekap kehadiran dan pelanggaran kelas.</p></div>
-                        </div>
-                        <div class="flex flex-wrap items-center gap-2">
-                            <input type="date" id="anFrom" value="${from}" onchange="anApply()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold">
-                            <span class="text-xs text-gray-400 font-bold">s/d</span>
-                            <input type="date" id="anTo" value="${to}" onchange="anApply()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold">
-                            ${preset('7 Hari', 7)}${preset('30 Hari', 30)}${preset('Bulan Ini', 'month')}${preset('Semua', 'all')}
-                        </div>
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                        <h2 class="font-extrabold text-santara-navy text-base">Analitik Kelas ${esc(mockState.schoolConfig.className)}</h2>
+                        <span class="text-[11px] text-santara-textSec font-medium"><i class="fa-solid fa-database mr-1"></i>Data langsung dari database • hanya kelas Anda</span>
                     </div>
-                    <div class="grid lg:grid-cols-2 gap-6">
-                        <div class="space-y-4">
-                            <div class="flex items-center justify-between"><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Rekap Kehadiran</h4><span class="px-2.5 py-1 rounded-full bg-teal-50 text-santara-teal text-[11px] font-extrabold">Tingkat hadir ${pct(cnt.HADIR + cnt.TERLAMBAT)}%</span></div>
-                            <div class="grid grid-cols-5 gap-2">${tiles}</div>
-                            <div class="h-3 rounded-full bg-gray-100 overflow-hidden flex">${stack}</div>
-                            <p class="text-[11px] text-gray-400">${total} catatan absensi pada ${fmtDate(from)} s/d ${fmtDate(to)}.</p>
-                            <div><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider mb-1">Perlu Perhatian (Alfa & Terlambat)</h4>${topHtml}</div>
-                        </div>
-                        <div class="space-y-4">
-                            <h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Statistik Pelanggaran & Poin Karakter</h4>
-                            <div class="grid grid-cols-3 gap-2">
-                                <div class="p-3 rounded-2xl border border-red-200 bg-red-50 text-center"><span class="block text-[10px] font-bold text-red-700 uppercase">Pelanggaran</span><span class="text-xl font-black text-red-700">${vios.length}</span></div>
-                                <div class="p-3 rounded-2xl border border-orange-200 bg-orange-50 text-center"><span class="block text-[10px] font-bold text-orange-700 uppercase">Poin Turun</span><span class="text-xl font-black text-orange-700">-${totalPts}</span></div>
-                                <div class="p-3 rounded-2xl border border-teal-200 bg-teal-50 text-center"><span class="block text-[10px] font-bold text-teal-700 uppercase">Rata-rata Poin</span><span class="text-xl font-black text-teal-700">${avgPts}</span></div>
-                            </div>
-                            <p class="text-[11px] text-gray-500">${affected} siswa terdampak • Ringan ${sev.Ringan} • Sedang ${sev.Sedang} • Berat ${sev.Berat}</p>
-                            <div class="space-y-3"><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Kategori Pelanggaran Terbanyak</h4>${catHtml}</div>
-                        </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                        <div id="panelTrend" class="xl:col-span-2"></div>
+                        <div id="panelDonut"></div>
+                    </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                        <div id="panelTop5"></div>
+                        <div id="panelCondition"></div>
+                        <div id="panelActivity"></div>
                     </div>
                 </div>`;
+            safePanel('panelTrend', renderTrendPanel);
+            safePanel('panelDonut', renderDonutPanel);
+            safePanel('panelTop5', renderTop5Panel);
+            safePanel('panelCondition', renderConditionPanel);
+            safePanel('panelActivity', renderActivityPanel);
         }
+
+        // ----- 1) Tren kehadiran (batang + garis) -----
+        function setTrend(mode) { trendState.mode = mode; safePanel('panelTrend', renderTrendPanel); }
+        function applyTrendRange() {
+            const f = (document.getElementById('trFrom') || {}).value, t = (document.getElementById('trTo') || {}).value;
+            if (!f || !t) return;
+            let from = f <= t ? f : t, to = f <= t ? t : f;
+            if (dateAddDays(from, 366) < to) { from = dateAddDays(to, -366); showToast('Info', 'Rentang dibatasi maksimal 1 tahun.'); }
+            trendState = { mode: 'custom', from, to };
+            safePanel('panelTrend', renderTrendPanel);
+        }
+        function buildBuckets(from, to) {
+            const days = []; for (let d = from; d <= to; d = dateAddDays(d, 1)) days.push(d);
+            const lab = d => d.slice(8) + '/' + d.slice(5, 7);
+            if (days.length <= 45) return days.map(d => ({ label: lab(d), from: d, to: d, title: fmtDate(d) }));
+            const out = [];
+            for (let i = 0; i < days.length; i += 7) { const a = days[i], b = days[Math.min(i + 6, days.length - 1)]; out.push({ label: lab(a), from: a, to: b, title: `${fmtDate(a)} – ${fmtDate(b)}` }); }
+            return out;
+        }
+        function renderTrendPanel() {
+            const el = document.getElementById('panelTrend'); if (!el) return;
+            destroyChart('trend');
+            const t = todayISO();
+            let from, to;
+            if (trendState.mode === '7') { from = dateAddDays(t, -6); to = t; }
+            else if (trendState.mode === '30') { from = dateAddDays(t, -29); to = t; }
+            else { to = trendState.to || t; from = trendState.from || dateAddDays(to, -6); }
+            const title = trendState.mode === '7' ? 'Tren Kehadiran 7 Hari Terakhir' : trendState.mode === '30' ? 'Tren Kehadiran 30 Hari Terakhir' : `Tren Kehadiran ${fmtDate(from)} – ${fmtDate(to)}`;
+            const recs = validRecords().filter(r => r.date >= from && r.date <= to);
+            const right = `<div class="flex flex-wrap items-center gap-2">${tabBtn('7 Hari', trendState.mode === '7', "setTrend('7')")}${tabBtn('30 Hari', trendState.mode === '30', "setTrend('30')")}${tabBtn('Rentang', trendState.mode === 'custom', "setTrend('custom')")}</div>`;
+            const range = trendState.mode === 'custom' ? `<div class="flex flex-wrap items-center gap-2"><input type="date" id="trFrom" value="${from}" onchange="applyTrendRange()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold"><span class="text-xs text-gray-400 font-bold">s/d</span><input type="date" id="trTo" value="${to}" onchange="applyTrendRange()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold"></div>` : '';
+            let body;
+            if (!recs.length) body = emptyBox('fa-chart-column', 'Belum ada data kehadiran pada periode ini.');
+            else if (!chartsReady()) body = emptyBox('fa-plug-circle-exclamation', 'Pustaka grafik gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.');
+            else body = `<div class="relative h-72 md:h-80"><canvas id="trendChart"></canvas></div>
+                <p class="text-[11px] text-gray-400">Klik batang atau titik untuk melihat siswa. % Kehadiran = (Hadir + Terlambat) ÷ total catatan kehadiran pada tanggal tersebut.</p>`;
+            el.innerHTML = panelCard(panelHead('fa-chart-column', 'bg-teal-50 text-santara-teal', title, `${fmtDate(from)} – ${fmtDate(to)}`, right) + range + body);
+            if (!recs.length || !chartsReady()) return;
+            const buckets = buildBuckets(from, to);
+            const per = buckets.map(b => { const rs = recs.filter(r => r.date >= b.from && r.date <= b.to); const c = countStatus(rs); return { b, rs, c, total: rs.length, pct: hadirPct(c, rs.length) }; });
+            const stacked = buckets.length > 10;
+            const datasets = STATUS_KEYS.map(k => ({ type: 'bar', label: STATUS_META[k].label, data: per.map(p => p.c[k]), backgroundColor: STATUS_META[k].color, borderRadius: 4, yAxisID: 'y', order: 2, stack: stacked ? 's' : undefined }));
+            datasets.push({ type: 'line', label: '% Kehadiran', data: per.map(p => p.pct), yAxisID: 'y1', borderColor: '#1e3a8a', backgroundColor: '#1e3a8a', tension: 0.3, spanGaps: true, pointRadius: 4, pointHoverRadius: 7, borderWidth: 2.5, order: 1 });
+            charts.trend = new Chart(document.getElementById('trendChart'), {
+                type: 'bar', data: { labels: per.map(p => p.b.label), datasets },
+                options: {
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, animation: { duration: 400 },
+                    scales: {
+                        x: { stacked, grid: { display: false }, title: { display: true, text: 'Tanggal' } },
+                        y: { stacked, beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: 'Jumlah siswa' } },
+                        y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, ticks: { callback: v => v + '%' }, title: { display: true, text: '% Kehadiran' } }
+                    },
+                    plugins: {
+                        legend: { position: 'bottom', labels: { boxWidth: 12, usePointStyle: true } },
+                        tooltip: { callbacks: {
+                            title: items => per[items[0].dataIndex].b.title,
+                            label: c => c.dataset.type === 'line' ? ` % Kehadiran: ${c.parsed.y == null ? '-' : c.parsed.y + '%'}` : ` ${c.dataset.label}: ${c.parsed.y} siswa`,
+                            footer: items => `Total catatan: ${per[items[0].dataIndex].total}`
+                        } }
+                    },
+                    onHover: (e, els) => { if (e.native && e.native.target) e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
+                    onClick: (evt, els, chart) => {
+                        const hit = chart.getElementsAtEventForMode(evt.native || evt, 'nearest', { intersect: true }, true)[0];
+                        if (!hit) return;
+                        const p = per[hit.index];
+                        if (chart.data.datasets[hit.datasetIndex].type === 'line') openAttendanceDetail(`Kehadiran • ${p.b.title}`, p.rs);
+                        else { const k = STATUS_KEYS[hit.datasetIndex]; openAttendanceDetail(`${STATUS_META[k].label} • ${p.b.title}`, p.rs.filter(r => r.status === k)); }
+                    }
+                }
+            });
+        }
+
+        // ----- 2) Donat persentase kehadiran -----
+        function setDonut(m) { donutMode = m; safePanel('panelDonut', renderDonutPanel); }
+        function donutRange() {
+            const t = todayISO();
+            if (donutMode === 'daily') return { from: t, to: t, label: 'Hari ini' };
+            if (donutMode === 'weekly') return { from: dateAddDays(t, -6), to: t, label: '7 hari terakhir' };
+            return { from: t.slice(0, 8) + '01', to: t, label: 'Bulan ini' };
+        }
+        function openDonutDetail(k) {
+            const r = donutRange();
+            openAttendanceDetail(`${STATUS_META[k].label} • ${r.label}`, validRecords().filter(x => x.date >= r.from && x.date <= r.to && x.status === k));
+        }
+        function renderDonutPanel() {
+            const el = document.getElementById('panelDonut'); if (!el) return;
+            destroyChart('donut');
+            const r = donutRange();
+            const recs = validRecords().filter(x => x.date >= r.from && x.date <= r.to);
+            const c = countStatus(recs), total = recs.length, hp = hadirPct(c, total);
+            const right = `<div class="flex flex-wrap items-center gap-2">${tabBtn('Harian', donutMode === 'daily', "setDonut('daily')")}${tabBtn('Mingguan', donutMode === 'weekly', "setDonut('weekly')")}${tabBtn('Bulanan', donutMode === 'monthly', "setDonut('monthly')")}</div>`;
+            const head = panelHead('fa-chart-pie', 'bg-blue-50 text-blue-600', 'Persentase Kehadiran Keseluruhan', `${r.label} • ${fmtDate(r.from)}${r.from === r.to ? '' : ' – ' + fmtDate(r.to)}`, right);
+            if (!total) { el.innerHTML = panelCard(head + emptyBox('fa-chart-pie', 'Belum ada data kehadiran pada periode ini.')); return; }
+            if (!chartsReady()) { el.innerHTML = panelCard(head + emptyBox('fa-plug-circle-exclamation', 'Pustaka grafik gagal dimuat. Muat ulang halaman.')); return; }
+            const legend = STATUS_KEYS.map(k => `<button onclick="openDonutDetail('${k}')" class="w-full flex items-center justify-between py-2 px-2 rounded-xl hover:bg-gray-50 text-xs">
+                <span class="flex items-center space-x-2"><span class="w-3 h-3 rounded-full" style="background:${STATUS_META[k].color}"></span><span class="font-semibold text-santara-navy">${STATUS_META[k].label}</span></span>
+                <span class="font-bold text-gray-600">${c[k]} <span class="text-gray-400 font-semibold">(${round1(c[k] * 100 / total)}%)</span></span></button>`).join('');
+            el.innerHTML = panelCard(head + `
+                <div class="flex flex-col sm:flex-row xl:flex-col 2xl:flex-row items-center gap-5">
+                    <div class="relative w-full max-w-[220px] h-[220px] shrink-0"><canvas id="donutChart"></canvas></div>
+                    <div class="flex-1 w-full">${legend}<p class="text-[11px] text-gray-400 mt-2 px-2">Total ${total} catatan valid. % kehadiran = (Hadir + Terlambat) ÷ total catatan.</p></div>
+                </div>`);
+            charts.donut = new Chart(document.getElementById('donutChart'), {
+                type: 'doughnut',
+                data: { labels: STATUS_KEYS.map(k => STATUS_META[k].label), datasets: [{ data: STATUS_KEYS.map(k => c[k]), backgroundColor: STATUS_KEYS.map(k => STATUS_META[k].color), borderWidth: 2, borderColor: '#fff', hoverOffset: 6 }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false, cutout: '68%', animation: { duration: 400 },
+                    plugins: { legend: { display: false }, tooltip: { callbacks: { label: x => ` ${x.label}: ${x.parsed} (${round1(x.parsed * 100 / total)}%)` } } },
+                    onHover: (e, els) => { if (e.native && e.native.target) e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
+                    onClick: (evt, els) => { if (els.length) openDonutDetail(STATUS_KEYS[els[0].index]); }
+                },
+                plugins: [{ id: 'centerText', afterDraw(chart) {
+                    const { ctx, chartArea: a } = chart; const cx = (a.left + a.right) / 2, cy = (a.top + a.bottom) / 2;
+                    ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillStyle = '#0f172a'; ctx.font = '800 24px sans-serif'; ctx.fillText(hp + '%', cx, cy - 8);
+                    ctx.fillStyle = '#64748b'; ctx.font = '600 11px sans-serif'; ctx.fillText('Kehadiran', cx, cy + 14);
+                    ctx.restore();
+                } }]
+            });
+        }
+
+        // ----- 3) Top 5 permasalahan -----
+        function setTop5(m) { top5Mode = m; safePanel('panelTop5', renderTop5Panel); }
+        function problemRecords() {
+            const t = todayISO();
+            const from = top5Mode === '30' ? dateAddDays(t, -29) : top5Mode === 'month' ? t.slice(0, 8) + '01' : '0000-01-01';
+            const out = [];
+            mockState.violations.forEach(v => { if ((v.rawDate || '') >= from) out.push({ key: normKey(v.violation), label: v.violation, nis: v.nis, date: v.rawDate, source: 'Pelanggaran', detail: `${v.points} poin • ${v.action}` }); });
+            // catatan "Tindak Lanjut Early Warning" adalah penanganan, bukan masalah baru, jadi tidak dihitung ganda
+            mockState.counseling.forEach(c => { if (c.category !== 'Tindak Lanjut Early Warning' && (c.rawDate || '') >= from) out.push({ key: normKey(c.category), label: c.category, nis: c.nis, date: c.rawDate, source: 'Pembinaan', detail: `${c.status} • ${c.action}` }); });
+            return out;
+        }
+        function problemGroups() {
+            const g = {};
+            problemRecords().forEach(r => { const x = g[r.key] || (g[r.key] = { key: r.key, label: r.label, n: 0, nis: new Set(), recs: [] }); x.n++; x.nis.add(r.nis); x.recs.push(r); });
+            return Object.values(g).sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
+        }
+        function openProblemDetail(key) {
+            const g = problemGroups().find(x => x.key === key);
+            if (!g) return;
+            const items = g.recs.slice().sort((a, b) => String(b.date).localeCompare(String(a.date))).map(r => {
+                const st = studentByNis(r.nis);
+                return `<div class="flex items-center justify-between py-2.5 gap-3">
+                    <button ${st ? `onclick="openStudentFromModal(${st.id})"` : ''} class="text-left min-w-0"><span class="block font-bold text-santara-navy truncate">${st ? st.name : r.nis}</span><span class="block text-[10px] text-gray-400">${fmtDate(r.date)} • ${r.detail}</span></button>
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${r.source === 'Pelanggaran' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'} shrink-0">${r.source}</span></div>`;
+            }).join('');
+            openListModal(g.label, `${g.n} kasus • ${g.nis.size} siswa`, items);
+        }
+        function openProblemAll() {
+            const gs = problemGroups(); const max = gs.length ? gs[0].n : 1;
+            openListModal('Semua Kategori Permasalahan', `${gs.reduce((n, x) => n + x.n, 0)} kasus dari ${new Set(problemRecords().map(r => r.nis)).size} siswa`,
+                gs.map((g, i) => `<button onclick="openProblemDetail('${esc(g.key).replace(/'/g, '&#39;')}')" class="w-full text-left py-2.5"><div class="flex justify-between mb-1"><span class="font-bold text-santara-navy truncate pr-2">${i + 1}. ${g.label}</span><span class="font-bold text-gray-500 shrink-0">${g.n} kasus • ${g.nis.size} siswa</span></div><div class="h-2 bg-gray-100 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-santara-teal to-santara-blue rounded-full" style="width:${Math.round(g.n * 100 / max)}%"></div></div></button>`).join(''));
+        }
+        function renderTop5Panel() {
+            const el = document.getElementById('panelTop5'); if (!el) return;
+            const gs = problemGroups(); const top = gs.slice(0, 5); const max = top.length ? top[0].n : 1;
+            const totalCases = gs.reduce((n, x) => n + x.n, 0);
+            const uniq = new Set(problemRecords().map(r => r.nis)).size;
+            const right = `<div class="flex gap-1.5">${tabBtn('Semua', top5Mode === 'all', "setTop5('all')")}${tabBtn('30 Hari', top5Mode === '30', "setTop5('30')")}${tabBtn('Bulan Ini', top5Mode === 'month', "setTop5('month')")}</div>`;
+            const list = top.length ? top.map((g, i) => `<button onclick="openProblemDetail('${esc(g.key).replace(/'/g, '&#39;')}')" class="w-full text-left group">
+                <div class="flex items-center justify-between mb-1 gap-2"><span class="flex items-center space-x-2 min-w-0"><span class="w-6 h-6 rounded-lg ${i === 0 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'} text-[11px] font-black flex items-center justify-center shrink-0">${i + 1}</span><span class="font-bold text-xs text-santara-navy truncate group-hover:underline">${g.label}</span></span>
+                <span class="text-[11px] font-bold text-gray-500 shrink-0">${g.n} kasus • ${g.nis.size} siswa</span></div>
+                <div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full ${i === 0 ? 'bg-gradient-to-r from-red-500 to-orange-400' : 'bg-gradient-to-r from-santara-teal to-santara-blue'}" style="width:${Math.round(g.n * 100 / max)}%"></div></div></button>`).join('<div class="h-3"></div>')
+                : emptyBox('fa-clipboard-check', 'Belum ada catatan pelanggaran atau pembinaan pada periode ini.');
+            el.innerHTML = panelCard(panelHead('fa-ranking-star', 'bg-red-50 text-red-600', 'Top 5 Permasalahan Siswa', `${totalCases} kasus • ${uniq} siswa`, right) + `<div>${list}</div>` +
+                (gs.length ? `<button onclick="openProblemAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua (${gs.length} kategori)</button>` : '') +
+                '<p class="text-[10px] text-gray-400">Kategori mengikuti isian Pelanggaran dan Pembinaan yang tersimpan. 1 kasus = 1 catatan.</p>');
+        }
+
+        // ----- 4) Rekap kondisi siswa (penetapan manual wali kelas) -----
+        function renderConditionPanel() {
+            const el = document.getElementById('panelCondition'); if (!el) return;
+            const act = mockState.students.filter(x => x.accountStatus === 'Aktif'); const total = act.length;
+            const L = condLabels();
+            const cnt = { baik: 0, perhatian: 0, khusus: 0, pembinaan: 0, none: 0 };
+            act.forEach(x => { cnt[COND_KEYS.includes(x.conditionStatus) ? x.conditionStatus : 'none']++; });
+            const row = (k, label) => `<button onclick="openConditionList('${k}')" class="w-full text-left"><div class="flex items-center justify-between mb-1 text-xs"><span class="font-bold text-santara-navy">${label}</span><span class="font-bold text-gray-500">${cnt[k]} siswa <span class="text-gray-400">(${total ? round1(cnt[k] * 100 / total) : 0}%)</span></span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full ${COND_BAR[k]}" style="width:${total ? Math.round(cnt[k] * 100 / total) : 0}%"></div></div></button>`;
+            const right = `<div class="flex gap-1.5"><button onclick="openConditionManager()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-santara-navy text-white">Kelola</button><button onclick="openConditionLabels()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-gray-50 border border-santara-border text-santara-navy">Atur Kategori</button></div>`;
+            el.innerHTML = panelCard(panelHead('fa-users-viewfinder', 'bg-purple-50 text-purple-600', 'Rekap Kondisi Siswa', `${total} siswa aktif`, right) +
+                (total ? `<div class="space-y-3.5">${COND_KEYS.map(k => row(k, esc(L[k]))).join('')}${row('none', 'Belum Dinilai')}</div>` : emptyBox('fa-users', 'Belum ada siswa aktif.')) +
+                '<p class="text-[10px] text-gray-400">Kondisi ditetapkan manual oleh wali kelas (menu Kelola atau saat Tindak Lanjut), tidak dihitung otomatis.</p>');
+        }
+        function openConditionList(k) {
+            const L = condLabels();
+            const list = mockState.students.filter(x => x.accountStatus === 'Aktif' && (COND_KEYS.includes(x.conditionStatus) ? x.conditionStatus : 'none') === k);
+            openListModal(k === 'none' ? 'Belum Dinilai' : esc(L[k]), `${list.length} siswa`, list.map(x => `<button onclick="openStudentFromModal(${x.id})" class="w-full flex items-center space-x-3 py-2.5 text-left"><img src="${x.avatar}" alt="" class="w-8 h-8 rounded-lg object-cover"><span class="font-bold text-santara-navy">${x.name}</span></button>`).join(''));
+        }
+        function openConditionManager() {
+            const L = condLabels();
+            const rows = mockState.students.filter(x => x.accountStatus === 'Aktif').map(x => `<div class="flex items-center justify-between py-2.5 gap-3"><span class="font-bold text-santara-navy truncate">${x.name}</span>
+                <select onchange="setStudentCondition(${x.id}, this.value)" class="p-2 border rounded-xl text-xs font-semibold shrink-0">
+                    <option value="" ${!x.conditionStatus ? 'selected' : ''}>Belum dinilai</option>
+                    ${COND_KEYS.map(k => `<option value="${k}" ${x.conditionStatus === k ? 'selected' : ''}>${esc(L[k])}</option>`).join('')}
+                </select></div>`).join('');
+            openListModal('Kelola Kondisi Siswa', 'Perubahan tersimpan otomatis.', rows);
+        }
+        function setStudentCondition(id, val) {
+            if (needSb()) return;
+            run(async () => { const { error } = await sb.from('students').update({ condition_status: val || null }).eq('id', id); if (error) throw error; }, null, null)
+                .then(ok => { if (ok) safePanel('panelCondition', renderConditionPanel); });
+        }
+        function openConditionLabels() {
+            const L = condLabels();
+            const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Atur Nama Kategori Kondisi</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    ${COND_KEYS.map(k => `<div><label class="block font-bold mb-1 uppercase text-gray-600">${k}</label><input type="text" id="condLbl_${k}" maxlength="30" value="${esc(L[k])}" class="w-full p-3 border rounded-xl"></div>`).join('')}
+                    <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+                        <button onclick="saveConditionLabels()" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan Nama Kategori</button></div>
+                </div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function saveConditionLabels() {
+            if (needSb()) return;
+            const def = { baik: 'Baik', perhatian: 'Perlu Perhatian', khusus: 'Khusus', pembinaan: 'Dalam Pembinaan' };
+            const obj = {}; COND_KEYS.forEach(k => { obj[k] = ((document.getElementById('condLbl_' + k) || {}).value || '').trim().slice(0, 30) || def[k]; });
+            run(async () => { const { error } = await sb.from('profiles').update({ condition_labels: obj }).eq('id', mockState.uid); if (error) throw error; closeModal(); },
+                ['Tersimpan', 'Nama kategori kondisi diperbarui.'], 'dashboard');
+        }
+
+        // ----- 5) Aktivitas terbaru -----
+        function buildActivities() {
+            const ev = [];
+            (mockState.attendanceRows || []).forEach(a => {
+                const st = studentById(a.sid); if (!st || !STATUS_KEYS.includes(a.status)) return;
+                const upd = a.updatedAt && Date.parse(a.updatedAt) - Date.parse(a.createdAt) > 60000;
+                const lbl = STATUS_META[a.status].label;
+                let text, icon, tone;
+                if (upd) { text = `Absensi diperbarui: ${lbl}`; icon = 'fa-pen-to-square'; tone = 'bg-indigo-50 text-indigo-600'; }
+                else if (a.status === 'TERLAMBAT') { text = `Siswa terlambat${a.time && a.time !== '-' ? ' (' + a.time + ')' : ''}`; icon = 'fa-clock'; tone = 'bg-yellow-50 text-yellow-600'; }
+                else if (a.status === 'ALFA') { text = 'Siswa dinyatakan Alpha'; icon = 'fa-user-xmark'; tone = 'bg-red-50 text-red-600'; }
+                else { text = `Absensi dicatat: ${lbl}`; icon = 'fa-calendar-check'; tone = 'bg-green-50 text-green-600'; }
+                ev.push({ ts: upd ? a.updatedAt : a.createdAt, text, icon, tone, st });
+            });
+            mockState.violations.forEach(v => { const st = studentByNis(v.nis); if (v.createdAt) ev.push({ ts: v.createdAt, text: `Pelanggaran baru: ${v.violation} (${v.points} poin)`, icon: 'fa-gavel', tone: 'bg-red-50 text-red-600', st }); });
+            mockState.counseling.forEach(c => { const st = studentByNis(c.nis); if (c.createdAt) ev.push({ ts: c.createdAt, text: `Pembinaan dicatat: ${c.category}`, icon: 'fa-comments', tone: 'bg-blue-50 text-blue-600', st }); });
+            mockState.homeVisits.forEach(h => { const st = studentByNis(h.nis); if (h.createdAt) ev.push({ ts: h.createdAt, text: 'Home visit dicatat', icon: 'fa-house-user', tone: 'bg-teal-50 text-teal-600', st }); });
+            mockState.students.forEach(x => { if (x.createdAt && x.updatedAt && Date.parse(x.updatedAt) - Date.parse(x.createdAt) > 60000) ev.push({ ts: x.updatedAt, text: 'Data profil siswa diperbarui', icon: 'fa-id-card', tone: 'bg-purple-50 text-purple-600', st: x }); });
+            return ev.filter(e => Date.parse(e.ts)).sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+        }
+        function activityItemHtml(e) {
+            return `<button ${e.st ? `onclick="openStudentFromModal(${e.st.id})"` : ''} class="w-full flex items-start space-x-3 py-2.5 text-left hover:bg-gray-50 rounded-xl px-1">
+                <span class="w-8 h-8 rounded-xl ${e.tone} flex items-center justify-center shrink-0 text-xs"><i class="fa-solid ${e.icon}"></i></span>
+                <span class="min-w-0 flex-1"><span class="block text-xs font-semibold text-santara-navy leading-snug">${e.text}</span>
+                <span class="block text-[10px] text-gray-400">${e.st ? e.st.name + ' • ' : ''}<span title="${fmtAbs(e.ts)}">${fmtRel(e.ts)}</span></span></span></button>`;
+        }
+        function openActivityAll() { openListModal('Semua Aktivitas Terbaru', 'Menampilkan 50 aktivitas terakhir. Klik untuk membuka profil siswa.', buildActivities().slice(0, 50).map(activityItemHtml).join('')); }
+        function renderActivityPanel() {
+            const el = document.getElementById('panelActivity'); if (!el) return;
+            const ev = buildActivities();
+            el.innerHTML = panelCard(panelHead('fa-clock-rotate-left', 'bg-indigo-50 text-indigo-600', 'Aktivitas Terbaru', 'Klik aktivitas untuk membuka profil siswa') +
+                (ev.length ? `<div class="divide-y divide-gray-50">${ev.slice(0, 8).map(activityItemHtml).join('')}</div><button onclick="openActivityAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua</button>` : emptyBox('fa-clock-rotate-left', 'Belum ada aktivitas tercatat.')));
+        }
+
+        // ---------- Logo (opsional, diatur lewat LOGO_SANTARA_URL / LOGO_SEKOLAH_URL) ----------
+        function applyLogos() {
+            if (LOGO_SANTARA_URL) {
+                const im = new Image();
+                im.onload = () => {
+                    ['logoLogin', 'logoSidebar', 'logoTopbar'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = `<img src="${LOGO_SANTARA_URL}" alt="SANTARA" class="w-full h-full object-contain p-1 bg-white">`; });
+                    let fav = document.querySelector('link[rel="icon"]');
+                    if (!fav) { fav = document.createElement('link'); fav.rel = 'icon'; document.head.appendChild(fav); }
+                    fav.href = LOGO_SANTARA_URL;
+                };
+                im.src = LOGO_SANTARA_URL;
+            }
+            if (LOGO_SEKOLAH_URL) {
+                const im2 = new Image();
+                im2.onload = () => { ['logoSekolahLogin', 'logoSekolahSidebar'].forEach(id => { const el = document.getElementById(id); if (el) { el.src = LOGO_SEKOLAH_URL; el.classList.remove('hidden'); } }); };
+                im2.src = LOGO_SEKOLAH_URL;
+            }
+        }
+        applyLogos();
 
         // ---------- Helper WhatsApp ----------
         function unesc(v) { return String(v == null ? '' : v).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'); }
@@ -719,10 +1030,10 @@
             const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
                 status: t ? t.status : 'BELUM', time: t ? t.scan_time : '-', attendanceSummary: sum, username: r.nis, accountStatus: 'Aktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
             mockState.students = [st];
-            mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, createdAt: a.created_at }));
+            mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at }));
             const who = { studentName: st.name, nis: st.nis };
             mockState.violations = me.violations.map(x => ({ id: x.id, rawDate: x.vio_date, createdAt: x.created_at, ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }));
-            mockState.counseling = me.counseling.map(x => ({ id: x.id, createdAt: x.created_at, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
+            mockState.counseling = me.counseling.map(x => ({ id: x.id, createdAt: x.created_at, rawDate: x.c_date, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
             mockState.homeVisits = me.home_visits.map(x => ({ id: x.id, ...who, date: fmtDate(x.visit_date), officer: esc(x.officer), reason: esc(x.reason), result: esc(x.result), status: x.status, evidenceUrl: x.evidence_url }));
             mockState.permissions = me.permissions.map(x => ({ id: x.id, studentId: r.id, ...who, category: x.category, date: fmtDate(x.perm_date), rawDate: x.perm_date, reason: esc(x.reason), status: x.status, evidenceType: 'whatsapp', evidenceUrl: x.evidence_url || `https://wa.me/${waNum(sc.teacherPhone)}` }));
             mockState.currentUser = { id: r.id, nis: r.nis, name: r.name, role: `Siswa ${p.class_name}`, nip: '', avatar: r.avatar, isQrOfficer: !!r.is_qr_officer, phone: r.phone, address: r.address, parent: r.parent, parentPhone: r.parent_phone };
@@ -1917,6 +2228,8 @@ async function sendAlfaLateRecap() {
             const file = (document.getElementById('myPermFile').files || [])[0];
             if (!reason) { showToast('Peringatan', 'Alasan wajib diisi.'); return; }
             if (needSb()) return;
+            const meP = mockState.students[0];
+            if (date === todayISO() && meP && (meP.status === 'HADIR' || meP.status === 'TERLAMBAT')) { showToast('Peringatan', 'Anda sudah absen hari ini, sehingga tidak dapat mengajukan izin/sakit.'); return; }
             if (mockState.permissions.some(p => p.rawDate === date && p.status !== 'REJECTED')) { showToast('Peringatan', 'Pengajuan izin/sakit untuk tanggal ini sudah ada (maksimal 1x per tanggal).'); return; }
             const cu = mockState.currentUser, sc = mockState.schoolConfig;
             const w = window.open('', '_blank');   // dibuka lebih dulu agar tidak diblokir browser
@@ -2001,6 +2314,7 @@ async function sendAlfaLateRecap() {
         async function recordScan(text) {
             const code = String(text).trim();
             if (!code || !studentToken || needSb()) return;
+            if (mockState.permissions.some(p => p.rawDate === todayISO() && p.status !== 'REJECTED')) { showToast('Tidak Dapat Absen', 'Anda sudah mengajukan izin/sakit hari ini, sehingga tidak dapat absen QR.'); stopCameraAndBack(); return; }
             const me0 = mockState.students[0];
             if (me0 && me0.status && me0.status !== 'BELUM') { showToast('Sudah Absen', `Anda sudah tercatat ${me0.status} hari ini (maksimal 1x per hari).`); stopCameraAndBack(); return; }
             const now = Date.now();
@@ -2012,7 +2326,7 @@ async function sendAlfaLateRecap() {
                 showToast('Absensi Berhasil', `${data.name} • ${data.status} pukul ${data.time}`);
                 await refreshData();
                 stopCameraAndBack();
-            } catch (e) { showToast('Gagal', errMsg(e)); if (/SUDAH_ABSEN/.test(String(e && e.message))) stopCameraAndBack(); }
+            } catch (e) { showToast('Gagal', errMsg(e)); if (/SUDAH_ABSEN|SUDAH_IZIN/.test(String(e && e.message))) stopCameraAndBack(); }
         }
         function manualScanPrompt() {
             const code = prompt('Tempelkan kode QR yang tampil di layar Petugas / Wali Kelas:');
@@ -2987,4 +3301,4 @@ _Wali Kelas ${unesc(sc.teacherName)}_`;
         }
     </script>
 </body>
-</html>F
+</html>
