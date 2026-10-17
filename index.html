@@ -45,10 +45,16 @@
         @media print {
             .no-print { display: none !important; }
             .print-only { display: block !important; }
-            body { background: white !important; color: black !important; }
+            html, body { height: auto !important; overflow: visible !important; background: #fff !important; color: #000 !important; padding: 0 !important; }
+            #app, #mainAppLayout, #mainAppLayout > div, #mainContentArea { display: block !important; height: auto !important; max-height: none !important; overflow: visible !important; padding: 0 !important; margin: 0 !important; background: #fff !important; }
+            #loginView, #sidebar, #mobileBottomNav, #mobileDrawerModal, #modalContainer, #toastNotification, #userDropdownMenu, aside, header, nav, button, select, input[type="date"], input[type="file"] { display: none !important; }
             .print-container { width: 100% !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; border: none !important; }
+            .shadow-sm, .shadow-md, .shadow-xl, .shadow-2xl { box-shadow: none !important; }
+            tr, .break-inside-avoid { break-inside: avoid; }
+            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             @page { size: A4 portrait; margin: 15mm; }
         }
+        @media (max-width: 767px) { #modalContentBox { max-height: 92vh; max-height: 92dvh; } }
         .print-only { display: none; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: #F1F5F9; }
@@ -264,6 +270,9 @@
             if (/BUKAN_PETUGAS/.test(m)) return 'Anda belum ditugaskan sebagai Petugas QR.';
             if (/PASSWORD_PENDEK/.test(m)) return 'Password minimal 6 karakter.';
             if (/ALASAN_KOSONG/.test(m)) return 'Alasan wajib diisi.';
+            if (/SUDAH_ABSEN/.test(m)) return 'Anda sudah tercatat absen hari ini (maksimal 1x per hari).';
+            if (/IZIN_SUDAH_ADA/.test(m)) return 'Pengajuan izin/sakit untuk tanggal tersebut sudah ada (maksimal 1x per tanggal).';
+            if (/LINK_INVALID/.test(m)) return 'Link Google Maps tidak valid.';
             if (/SISWA_TIDAK_DITEMUKAN/.test(m)) return 'Siswa tidak ditemukan di kelas ini.';
             if (/Invalid login credentials/i.test(m)) return 'Email atau password salah.';
             if (e && e.code === '23505') return 'NISN sudah terdaftar di kelas ini.';
@@ -309,7 +318,7 @@
             const res = await Promise.all([
                 sb.from('profiles').select('*').eq('id', uid).maybeSingle(),
                 sb.from('students').select('*').order('nis'),
-                sb.from('attendance').select('student_id,att_date,status,scan_time'),
+                fetchAllRows(() => sb.from('attendance').select('student_id,att_date,status,scan_time,created_at').order('att_date', { ascending: false }).order('id', { ascending: false })),
                 q('violations'), q('counseling'), q('home_visits'), q('permissions')
             ]);
             res.forEach(r => { if (r.error) throw r.error; });
@@ -324,6 +333,7 @@
             mockState.qrSettings.startTime = prof.qr_start;
             mockState.qrSettings.toleranceTime = prof.qr_tolerance;
 
+            mockState.attendanceRows = res[2].data.map(a => ({ sid: a.student_id, date: a.att_date, status: a.status, createdAt: a.created_at }));
             const today = todayISO();
             const sum = {}, todayRow = {};
             res[2].data.forEach(a => {
@@ -340,8 +350,8 @@
                 byId[r.id] = st; return st;
             });
             const who = id => byId[id] || { name: 'Siswa (dihapus)', nis: '-' };
-            mockState.violations = res[3].data.map(r => ({ id: r.id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.vio_date), violation: esc(r.violation), category: r.category, points: r.points, action: esc(r.action) }));
-            mockState.counseling = res[4].data.map(r => ({ id: r.id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
+            mockState.violations = res[3].data.map(r => ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.vio_date), violation: esc(r.violation), category: r.category, points: r.points, action: esc(r.action) }));
+            mockState.counseling = res[4].data.map(r => ({ id: r.id, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
             mockState.homeVisits = res[5].data.map(r => ({ id: r.id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: r.evidence_url }));
             mockState.permissions = res[6].data.map(r => ({ id: r.id, studentId: r.student_id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, category: r.category, date: fmtDate(r.perm_date), rawDate: r.perm_date, reason: esc(r.reason), status: r.status, evidenceType: 'whatsapp', evidenceUrl: r.evidence_url || `https://wa.me/${sc.teacherPhone}` }));
             recalculateStats();
@@ -356,6 +366,298 @@
             mockState.currentUser = { id: 0, name: sc.teacherName, role: `Wali Kelas ${sc.className}`, nip: sc.teacherNip, avatar: sc.avatar, isQrOfficer: false, phone: sc.teacherPhone, address: sc.schoolName, parent: 'Wali Kelas', parentPhone: sc.teacherPhone };
             proceedLoginSuccess();
         }
+        // ---------- Util data ----------
+        async function fetchAllRows(build) {
+            let from = 0, all = [];
+            for (;;) {
+                const r = await build().range(from, from + 999);
+                if (r.error) return r;
+                all = all.concat(r.data);
+                if (r.data.length < 1000) break;
+                from += 1000;
+            }
+            return { data: all, error: null };
+        }
+        const DEFAULT_MAP = 'https://maps.google.com/?q=-6.93,110.20';
+        function normMapLink(v) {
+            v = String(v || '').trim();
+            if (!v) return '';
+            if (/^-?\d{1,3}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?$/.test(v)) return 'https://www.google.com/maps?q=' + v.replace(/\s+/g, '');
+            if (/^https?:\/\//i.test(v)) return v;
+            if (/^(www\.)?(google\.[a-z.]+\/maps|maps\.google\.|maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(v)) return 'https://' + v;
+            return null;
+        }
+        function safeMapHref(u) { return /^https?:\/\//i.test(u || '') ? esc(u) : '#'; }
+
+        // ---------- Pusat Alert & Early Warning ----------
+        // Pemicu: Alfa >= 3x ATAU Poin Karakter < 75. Riwayat intervensi = counseling berstatus SELESAI.
+        // Setelah ada tindak lanjut, alert hanya menyala KEMBALI (eskalasi) bila ada pelanggaran/alfa BARU
+        // sesudah tindak lanjut terakhir dan siswa masih berada di atas batas.
+        function computeAlert(st) {
+            const alfaRows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.status === 'ALFA');
+            const viols = mockState.violations.filter(v => v.nis === st.nis);
+            const pts = getStudentPoints(st);
+            const reasons = [];
+            if (alfaRows.length >= 3) reasons.push(`Alfa ${alfaRows.length}x`);
+            if (pts < 75) reasons.push(`Poin karakter ${pts}/100`);
+            if (!reasons.length) return null;
+            const ivs = mockState.counseling.filter(c => c.nis === st.nis && c.status === 'SELESAI' && c.createdAt)
+                .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+            const last = ivs[0] || null;
+            let newViol = 0, newAlfa = 0;
+            if (last) {
+                const t = Date.parse(last.createdAt);
+                newViol = viols.filter(v => Date.parse(v.createdAt) > t).length;
+                newAlfa = alfaRows.filter(a => Date.parse(a.createdAt) > t).length;
+                if (!newViol && !newAlfa) return null;   // sudah ditindaklanjuti & belum ada kejadian baru
+            }
+            return { st, reasons, pts, alfa: alfaRows.length, level: ivs.length, last, newViol, newAlfa };
+        }
+        function computeAllAlerts() {
+            return mockState.students.filter(x => x.accountStatus === 'Aktif').map(computeAlert).filter(Boolean)
+                .sort((a, b) => b.level - a.level || a.pts - b.pts || b.alfa - a.alfa);
+        }
+        function alertBadge(a) {
+            if (a.level === 0) return ['ALERT BARU', 'bg-amber-100 text-amber-800 border-amber-300', 'border-amber-200 bg-amber-50/40'];
+            if (a.level === 1) return ['ESKALASI KE-1 • BERULANG', 'bg-orange-100 text-orange-800 border-orange-300', 'border-orange-200 bg-orange-50/40'];
+            return [`ESKALASI KE-${a.level} • KRITIS`, 'bg-red-100 text-red-800 border-red-300', 'border-red-200 bg-red-50/50'];
+        }
+        function renderAlertCenter() {
+            const box = document.getElementById('alertCenterBox');
+            if (!box) return;
+            const alerts = computeAllAlerts();
+            const items = alerts.map(a => {
+                const [label, badgeCls, rowCls] = alertBadge(a);
+                const st = a.st;
+                return `
+                    <div class="flex flex-col md:flex-row md:items-center gap-4 p-4 rounded-2xl border ${rowCls}">
+                        <img src="${st.avatar}" alt="" class="w-12 h-12 rounded-xl object-cover border border-white shadow-sm">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h4 class="font-bold text-santara-navy text-sm truncate">${st.name}</h4>
+                                <span class="px-2 py-0.5 rounded-full border text-[10px] font-extrabold ${badgeCls}">${label}</span>
+                            </div>
+                            <p class="text-[11px] text-gray-500 font-mono">NISN ${st.nis}</p>
+                            <div class="flex flex-wrap gap-1.5 mt-2">
+                                ${a.reasons.map(r => `<span class="px-2 py-0.5 bg-white border border-gray-200 rounded-lg text-[10px] font-bold text-gray-700">${r}</span>`).join('')}
+                            </div>
+                            ${a.last ? `<p class="text-[11px] text-gray-500 mt-1.5">Tindak lanjut terakhir ${a.last.date}. Sejak itu: <b>+${a.newViol}</b> pelanggaran, <b>+${a.newAlfa}</b> alfa.</p>` : ''}
+                        </div>
+                        <div class="flex gap-2 md:flex-col lg:flex-row shrink-0">
+                            <button onclick="sendAlertWa(${st.id})" class="flex-1 px-3.5 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-[11px] font-bold shadow-sm flex items-center justify-center space-x-1.5"><i class="fa-brands fa-whatsapp text-sm"></i><span>WhatsApp Ortu</span></button>
+                            <button onclick="openInterventionModal(${st.id})" class="flex-1 px-3.5 py-2.5 bg-santara-navy hover:bg-blue-900 text-white rounded-xl text-[11px] font-bold shadow-sm flex items-center justify-center space-x-1.5"><i class="fa-solid fa-clipboard-check text-sm"></i><span>Tindak Lanjut</span></button>
+                        </div>
+                    </div>`;
+            }).join('');
+            box.innerHTML = `
+                <div class="bg-white rounded-3xl border border-santara-border shadow-sm p-5 md:p-6 space-y-4">
+                    <div class="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b pb-3.5">
+                        <div class="flex items-center space-x-2.5">
+                            <span class="w-9 h-9 rounded-xl ${alerts.length ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'} flex items-center justify-center"><i class="fa-solid ${alerts.length ? 'fa-bell' : 'fa-shield-heart'}"></i></span>
+                            <div>
+                                <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Pusat Alert & Early Warning</h3>
+                                <p class="text-[11px] text-santara-textSec">Pemicu: Alfa 3x atau lebih, atau Poin Karakter di bawah 75. Menyala kembali (eskalasi) bila ada pelanggaran/alfa baru setelah tindak lanjut.</p>
+                            </div>
+                        </div>
+                        <span class="px-3 py-1 rounded-full text-xs font-bold ${alerts.length ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}">${alerts.length} Alert Aktif</span>
+                    </div>
+                    ${alerts.length ? `<div class="space-y-3">${items}</div>` : `<div class="text-center py-8 text-xs text-gray-500"><i class="fa-solid fa-circle-check text-green-500 text-3xl mb-2 block"></i>Tidak ada alert aktif. Semua siswa dalam kondisi baik.</div>`}
+                </div>`;
+        }
+        function sendAlertWa(id) {
+            const a = computeAlert(mockState.students.find(x => x.id === id) || {});
+            const st = mockState.students.find(x => x.id === id);
+            if (!st) return;
+            const info = a || { reasons: [], level: 0, alfa: 0, pts: getStudentPoints(st), newViol: 0, newAlfa: 0 };
+            const sc = mockState.schoolConfig;
+            const lines = [];
+            if (info.alfa >= 3) lines.push(`• Kehadiran: tercatat ALFA ${info.alfa} kali`);
+            if (info.pts < 75) lines.push(`• Poin karakter: ${info.pts} / 100`);
+            const esk = info.level > 0 ? `\n\n*Catatan:* ini adalah peringatan lanjutan (eskalasi ke-${info.level}) karena masih ada ${info.newViol} pelanggaran dan ${info.newAlfa} alfa baru setelah pembinaan sebelumnya.` : '';
+            const msg = `Assalamualaikum Wr. Wb. Bapak/Ibu ${unesc(st.parent)},\n\nKami dari Wali Kelas ${sc.className} menyampaikan perhatian terkait ananda *${unesc(st.name)}* (NISN: ${st.nis}):\n\n${lines.join('\n') || '• Perlu perhatian bersama'}${esk}\n\nMohon Bapak/Ibu berkenan berkomunikasi dengan Wali Kelas atau hadir ke sekolah untuk bersama-sama membina ananda. Terima kasih.\n_Wali Kelas ${unesc(sc.teacherName)}_`;
+            const num = waNum(st.parentPhone);
+            const note = num ? '' : '<div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold">Nomor WhatsApp orang tua belum diisi. Anda tetap dapat memilih kontak secara manual di WhatsApp.</div>';
+            openWaModal(`Kirim WhatsApp ke Orang Tua ${unesc(st.name)}`, msg, `https://wa.me/${num}?text=${encodeURIComponent(msg)}`, note);
+        }
+        function openInterventionModal(id) {
+            const st = mockState.students.find(x => x.id === id);
+            if (!st) return;
+            const a = computeAlert(st);
+            const prev = mockState.counseling.filter(c => c.nis === st.nis && c.status === 'SELESAI').length;
+            const modal = document.getElementById('modalContainer');
+            const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between">
+                    <h3 class="font-bold text-sm">Tindak Lanjut Early Warning (${st.name})</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold">
+                        Pemicu: ${a ? a.reasons.join(' • ') : '-'}. Tindak lanjut sebelumnya: ${prev} kali. Setelah disimpan, alert siswa ini otomatis hilang dari daftar aktif.
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">BENTUK TINDAK LANJUT</label>
+                        <select id="ivType" class="w-full p-3 border rounded-xl">
+                            <option>Pemanggilan siswa</option><option>Pemanggilan orang tua</option><option>Konseling BK</option><option>Home visit</option><option>Surat kesepakatan / pernyataan</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">URAIAN MASALAH & PERCAKAPAN</label>
+                        <textarea id="ivDesc" rows="3" class="w-full p-3 border rounded-xl">${a ? esc(a.reasons.join(', ')) : ''}</textarea>
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">TINDAKAN PEMBINAAN</label>
+                        <input type="text" id="ivAction" value="Pembinaan wali kelas" class="w-full p-3 border rounded-xl">
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">HASIL / KESEPAKATAN</label>
+                        <input type="text" id="ivResult" value="Siswa kooperatif" class="w-full p-3 border rounded-xl">
+                    </div>
+                    <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+                        <button onclick="submitIntervention(${st.id})" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md"><i class="fa-solid fa-circle-check mr-1"></i>Simpan & Tandai Selesai</button>
+                    </div>
+                </div>`;
+            modal.classList.add('flex');
+            modal.classList.remove('hidden');
+        }
+        function submitIntervention(id) {
+            const st = mockState.students.find(x => x.id === id);
+            if (!st || needSb()) return;
+            const g = i => (document.getElementById(i) || {}).value || '';
+            const uraian = g('ivDesc').trim();
+            if (!uraian) { showToast('Peringatan', 'Uraian masalah wajib diisi.'); return; }
+            const row = { student_id: id, category: 'Tindak Lanjut Early Warning', description: `[${g('ivType')}] ${uraian}`,
+                action: g('ivAction').trim() || 'Pembinaan wali kelas', result: g('ivResult').trim() || 'Siswa kooperatif', status: 'SELESAI' };
+            run(async () => { const { error } = await sb.from('counseling').insert(row); if (error) throw error; closeModal(); },
+                ['Alert Diselesaikan', `Tindak lanjut ${unesc(st.name)} tersimpan. Alert dihapus dari daftar aktif.`], 'dashboard');
+        }
+
+        // ---------- Dashboard siswa: banner personal & badge teladan ----------
+        function studentAlertBannerHtml(user) {
+            const a = computeAlert(user);
+            if (!a) return '';
+            const rep = a.level > 0;
+            const sc = mockState.schoolConfig;
+            const wa = `https://wa.me/${waNum(sc.teacherPhone)}?text=${encodeURIComponent(`Assalamualaikum ${unesc(sc.teacherName)}, saya ${unesc(user.name)} (NISN ${user.nis}) ingin berkonsultasi terkait peringatan kehadiran/poin karakter saya.`)}`;
+            const extra = rep ? ` Kamu sudah pernah dibina sebelumnya, tetapi tercatat ${a.newViol} pelanggaran dan ${a.newAlfa} alfa baru sejak itu.` : '';
+            return `
+                <div class="rounded-3xl p-5 md:p-6 border-2 ${rep ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'} shadow-sm flex flex-col md:flex-row md:items-center gap-4">
+                    <div class="w-12 h-12 shrink-0 rounded-2xl ${rep ? 'bg-red-600' : 'bg-amber-500'} text-white flex items-center justify-center text-xl"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                    <div class="flex-1 space-y-1">
+                        <h3 class="font-extrabold text-sm ${rep ? 'text-red-800' : 'text-amber-900'} uppercase tracking-wide">${rep ? 'Peringatan Lanjutan: Pelanggaran Berulang' : 'Peringatan Personal dari Wali Kelas'}</h3>
+                        <p class="text-xs ${rep ? 'text-red-900' : 'text-amber-900'} leading-relaxed font-medium">Kamu masuk daftar pengawasan khusus: <b>${a.reasons.join(' • ')}</b>.${extra} Segera perbaiki kehadiran dan kedisiplinanmu, lalu temui Wali Kelas.</p>
+                    </div>
+                    <a href="${wa}" target="_blank" rel="noopener" class="px-4 py-3 ${rep ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'} text-white rounded-2xl text-xs font-bold shadow-md flex items-center justify-center space-x-2"><i class="fa-brands fa-whatsapp text-base"></i><span>Hubungi Wali Kelas</span></a>
+                </div>`;
+        }
+        function teladanBadgeHtml(user) {
+            const sm = user.attendanceSummary || {};
+            const total = (sm.hadir || 0) + (sm.terlambat || 0) + (sm.sakit || 0) + (sm.izin || 0) + (sm.alfa || 0);
+            const viols = mockState.violations.filter(v => v.nis === user.nis).length;
+            if (!(total > 0 && (sm.alfa || 0) === 0 && getStudentPoints(user) === 100 && viols === 0)) return '';
+            return `
+                <div class="rounded-3xl p-5 md:p-6 bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 text-amber-950 shadow-lg flex items-center gap-4 border border-amber-300">
+                    <div class="w-14 h-14 shrink-0 rounded-full bg-white/70 flex items-center justify-center text-3xl text-amber-600 shadow-inner"><i class="fa-solid fa-medal"></i></div>
+                    <div>
+                        <span class="px-2.5 py-0.5 bg-amber-950 text-amber-200 rounded-full text-[10px] font-extrabold uppercase tracking-widest">Penghargaan</span>
+                        <h3 class="text-base md:text-lg font-black mt-1">Siswa Teladan</h3>
+                        <p class="text-xs font-semibold leading-relaxed">Kehadiran bersih tanpa Alfa, poin karakter sempurna (100), dan bebas catatan pelanggaran. Pertahankan!</p>
+                    </div>
+                </div>`;
+        }
+
+        // ---------- Analitik dashboard wali ----------
+        let anRange = null;
+        function anDefaultRange() { const t = todayISO(); return { from: t.slice(0, 8) + '01', to: t }; }
+        function anPreset(p) {
+            const t = todayISO();
+            if (p === 'all') anRange = { from: '2000-01-01', to: t };
+            else if (p === 'month') anRange = anDefaultRange();
+            else { const d = new Date(t + 'T00:00:00'); d.setDate(d.getDate() - (p - 1)); anRange = { from: d.toLocaleDateString('en-CA'), to: t }; }
+            renderAnalytics();
+        }
+        function anApply() {
+            const f = (document.getElementById('anFrom') || {}).value, t = (document.getElementById('anTo') || {}).value;
+            if (!f || !t) return;
+            anRange = f <= t ? { from: f, to: t } : { from: t, to: f };
+            renderAnalytics();
+        }
+        function renderAnalytics() {
+            const box = document.getElementById('analyticsBox');
+            if (!box) return;
+            if (!anRange) anRange = anDefaultRange();
+            const { from, to } = anRange;
+            const rows = (mockState.attendanceRows || []).filter(a => a.date >= from && a.date <= to);
+            const cnt = { HADIR: 0, TERLAMBAT: 0, SAKIT: 0, IZIN: 0, ALFA: 0 };
+            rows.forEach(a => { if (cnt[a.status] != null) cnt[a.status]++; });
+            const total = rows.length;
+            const pct = n => total ? Math.round(n * 1000 / total) / 10 : 0;
+            const meta = { HADIR: ['Hadir', 'bg-green-500', 'text-green-700 bg-green-50 border-green-200'], TERLAMBAT: ['Terlambat', 'bg-yellow-400', 'text-yellow-700 bg-yellow-50 border-yellow-200'],
+                SAKIT: ['Sakit', 'bg-blue-500', 'text-blue-700 bg-blue-50 border-blue-200'], IZIN: ['Izin', 'bg-purple-500', 'text-purple-700 bg-purple-50 border-purple-200'], ALFA: ['Alfa', 'bg-red-500', 'text-red-700 bg-red-50 border-red-200'] };
+            const tiles = Object.keys(meta).map(k => `<div class="p-3 rounded-2xl border ${meta[k][2]} text-center"><span class="block text-[10px] font-bold uppercase">${meta[k][0]}</span><span class="text-xl font-black">${cnt[k]}</span><span class="block text-[10px] font-semibold opacity-70">${pct(cnt[k])}%</span></div>`).join('');
+            const stack = total ? Object.keys(meta).filter(k => cnt[k]).map(k => `<div class="${meta[k][1]} h-full" style="width:${pct(cnt[k])}%" title="${meta[k][0]} ${pct(cnt[k])}%"></div>`).join('') : '';
+            // siswa dengan alfa/terlambat terbanyak pada rentang
+            const per = {};
+            rows.forEach(a => { if (a.status === 'ALFA' || a.status === 'TERLAMBAT') { const m = per[a.sid] || (per[a.sid] = { alfa: 0, late: 0 }); if (a.status === 'ALFA') m.alfa++; else m.late++; } });
+            const top = Object.keys(per).map(id => ({ st: mockState.students.find(x => x.id === Number(id)), ...per[id] })).filter(x => x.st)
+                .sort((a, b) => b.alfa - a.alfa || b.late - a.late).slice(0, 5);
+            const topHtml = top.length ? top.map(x => `<div class="flex items-center justify-between text-xs py-1.5 border-b last:border-0"><span class="font-semibold text-santara-navy truncate pr-2">${x.st.name}</span><span class="shrink-0 space-x-1.5"><span class="px-2 py-0.5 rounded-full bg-red-50 text-red-700 font-bold text-[10px]">Alfa ${x.alfa}</span><span class="px-2 py-0.5 rounded-full bg-yellow-50 text-yellow-700 font-bold text-[10px]">Telat ${x.late}</span></span></div>`).join('')
+                : '<p class="text-xs text-gray-400 py-2">Tidak ada alfa/terlambat pada rentang ini.</p>';
+            // pelanggaran
+            const vios = mockState.violations.filter(v => v.rawDate >= from && v.rawDate <= to);
+            const totalPts = vios.reduce((n, v) => n + Math.abs(v.points || 0), 0);
+            const affected = new Set(vios.map(v => v.nis)).size;
+            const act = mockState.students.filter(x => x.accountStatus === 'Aktif');
+            const avgPts = act.length ? Math.round(act.reduce((n, x) => n + getStudentPoints(x), 0) / act.length) : 100;
+            const groups = {};
+            vios.forEach(v => { const k = String(v.violation).trim().toLowerCase(); (groups[k] || (groups[k] = { label: v.violation, n: 0 })).n++; });
+            const sorted = Object.values(groups).sort((a, b) => b.n - a.n);
+            const topCat = sorted.slice(0, 5);
+            const rest = sorted.slice(5).reduce((n, g) => n + g.n, 0);
+            if (rest) topCat.push({ label: 'Lainnya', n: rest });
+            const maxN = topCat.length ? Math.max(...topCat.map(g => g.n)) : 1;
+            const catHtml = topCat.length ? topCat.map(g => `<div><div class="flex justify-between text-xs mb-1"><span class="font-semibold text-santara-navy truncate pr-2">${g.label}</span><span class="font-bold text-gray-500 shrink-0">${g.n}x (${Math.round(g.n * 100 / vios.length)}%)</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-santara-teal to-santara-blue" style="width:${Math.round(g.n * 100 / maxN)}%"></div></div></div>`).join('')
+                : '<p class="text-xs text-gray-400 py-2">Belum ada pelanggaran pada rentang ini.</p>';
+            const sev = { Ringan: 0, Sedang: 0, Berat: 0 };
+            vios.forEach(v => { if (sev[v.category] != null) sev[v.category]++; });
+            const preset = (label, p) => `<button onclick="anPreset(${typeof p === 'string' ? `'${p}'` : p})" class="px-3 py-1.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-[11px] font-bold text-santara-navy">${label}</button>`;
+            box.innerHTML = `
+                <div class="bg-white rounded-3xl border border-santara-border shadow-sm p-5 md:p-6 space-y-5">
+                    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b pb-3.5">
+                        <div class="flex items-center space-x-2.5">
+                            <span class="w-9 h-9 rounded-xl bg-teal-50 text-santara-teal flex items-center justify-center"><i class="fa-solid fa-chart-column"></i></span>
+                            <div><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Statistik Kehadiran & Pelanggaran</h3>
+                            <p class="text-[11px] text-santara-textSec">Pilih rentang tanggal untuk merekap kehadiran dan pelanggaran kelas.</p></div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <input type="date" id="anFrom" value="${from}" onchange="anApply()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold">
+                            <span class="text-xs text-gray-400 font-bold">s/d</span>
+                            <input type="date" id="anTo" value="${to}" onchange="anApply()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold">
+                            ${preset('7 Hari', 7)}${preset('30 Hari', 30)}${preset('Bulan Ini', 'month')}${preset('Semua', 'all')}
+                        </div>
+                    </div>
+                    <div class="grid lg:grid-cols-2 gap-6">
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between"><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Rekap Kehadiran</h4><span class="px-2.5 py-1 rounded-full bg-teal-50 text-santara-teal text-[11px] font-extrabold">Tingkat hadir ${pct(cnt.HADIR + cnt.TERLAMBAT)}%</span></div>
+                            <div class="grid grid-cols-5 gap-2">${tiles}</div>
+                            <div class="h-3 rounded-full bg-gray-100 overflow-hidden flex">${stack}</div>
+                            <p class="text-[11px] text-gray-400">${total} catatan absensi pada ${fmtDate(from)} s/d ${fmtDate(to)}.</p>
+                            <div><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider mb-1">Perlu Perhatian (Alfa & Terlambat)</h4>${topHtml}</div>
+                        </div>
+                        <div class="space-y-4">
+                            <h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Statistik Pelanggaran & Poin Karakter</h4>
+                            <div class="grid grid-cols-3 gap-2">
+                                <div class="p-3 rounded-2xl border border-red-200 bg-red-50 text-center"><span class="block text-[10px] font-bold text-red-700 uppercase">Pelanggaran</span><span class="text-xl font-black text-red-700">${vios.length}</span></div>
+                                <div class="p-3 rounded-2xl border border-orange-200 bg-orange-50 text-center"><span class="block text-[10px] font-bold text-orange-700 uppercase">Poin Turun</span><span class="text-xl font-black text-orange-700">-${totalPts}</span></div>
+                                <div class="p-3 rounded-2xl border border-teal-200 bg-teal-50 text-center"><span class="block text-[10px] font-bold text-teal-700 uppercase">Rata-rata Poin</span><span class="text-xl font-black text-teal-700">${avgPts}</span></div>
+                            </div>
+                            <p class="text-[11px] text-gray-500">${affected} siswa terdampak • Ringan ${sev.Ringan} • Sedang ${sev.Sedang} • Berat ${sev.Berat}</p>
+                            <div class="space-y-3"><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Kategori Pelanggaran Terbanyak</h4>${catHtml}</div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
         // ---------- Helper WhatsApp ----------
         function unesc(v) { return String(v == null ? '' : v).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'); }
         function waNum(p) { let d = String(p || '').replace(/\D/g, ''); if (d.startsWith('0')) d = '62' + d.slice(1); else if (d.startsWith('8')) d = '62' + d; return d; }
@@ -417,9 +719,10 @@
             const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
                 status: t ? t.status : 'BELUM', time: t ? t.scan_time : '-', attendanceSummary: sum, username: r.nis, accountStatus: 'Aktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
             mockState.students = [st];
+            mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, createdAt: a.created_at }));
             const who = { studentName: st.name, nis: st.nis };
-            mockState.violations = me.violations.map(x => ({ id: x.id, ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }));
-            mockState.counseling = me.counseling.map(x => ({ id: x.id, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
+            mockState.violations = me.violations.map(x => ({ id: x.id, rawDate: x.vio_date, createdAt: x.created_at, ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }));
+            mockState.counseling = me.counseling.map(x => ({ id: x.id, createdAt: x.created_at, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
             mockState.homeVisits = me.home_visits.map(x => ({ id: x.id, ...who, date: fmtDate(x.visit_date), officer: esc(x.officer), reason: esc(x.reason), result: esc(x.result), status: x.status, evidenceUrl: x.evidence_url }));
             mockState.permissions = me.permissions.map(x => ({ id: x.id, studentId: r.id, ...who, category: x.category, date: fmtDate(x.perm_date), rawDate: x.perm_date, reason: esc(x.reason), status: x.status, evidenceType: 'whatsapp', evidenceUrl: x.evidence_url || `https://wa.me/${waNum(sc.teacherPhone)}` }));
             mockState.currentUser = { id: r.id, nis: r.nis, name: r.name, role: `Siswa ${p.class_name}`, nip: '', avatar: r.avatar, isQrOfficer: !!r.is_qr_officer, phone: r.phone, address: r.address, parent: r.parent, parentPhone: r.parent_phone };
@@ -827,8 +1130,12 @@
                             </div>
                         </div>
                     </div>
+                    <div id="alertCenterBox"></div>
+                    <div id="analyticsBox"></div>
                 </div>
             `;
+            renderAlertCenter();
+            renderAnalytics();
         }
 
 async function sendAlfaLateRecap() {
@@ -919,6 +1226,9 @@ async function sendAlfaLateRecap() {
                             </button>
                         </div>
                     </div>
+
+                    ${studentAlertBannerHtml(user)}
+                    ${teladanBadgeHtml(user)}
 
                     <div class="bg-gradient-to-r from-santara-navy via-indigo-950 to-santara-navy rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden flex items-center justify-between border border-white/10">
                         <div class="absolute -right-10 -bottom-10 opacity-10 text-9xl"><i class="fa-solid fa-quote-right"></i></div>
@@ -1070,7 +1380,7 @@ async function sendAlfaLateRecap() {
                     </td>
                     <td class="p-3.5 text-gray-600">
                         ${s.address}<br>
-                        <a href="${s.mapLink}" target="_blank" class="text-santara-teal font-bold hover:underline inline-flex items-center mt-1"><i class="fa-solid fa-location-dot mr-1"></i> Buka Peta</a>
+                        <a href="${safeMapHref(s.mapLink)}" target="_blank" class="text-santara-teal font-bold hover:underline inline-flex items-center mt-1"><i class="fa-solid fa-location-dot mr-1"></i> Buka Peta</a>
                     </td>
                     <td class="p-3.5 text-right">
                         <button onclick="renderStudentProfileView(${s.id})" class="px-3.5 py-2 bg-santara-navy hover:bg-blue-900 text-white rounded-semibold text-[11px] shadow-sm transition">Profil 360°</button>
@@ -1219,6 +1529,10 @@ async function sendAlfaLateRecap() {
                             <input type="text" id="newStudPhone" class="w-full p-3 border rounded-xl" value="08123456700">
                         </div>
                     </div>
+                    <div>
+                        <label class="block font-bold mb-1">LINK GOOGLE MAPS RUMAH (OPSIONAL)</label>
+                        <input type="text" id="newStudMap" class="w-full p-3 border rounded-xl" placeholder="Link Google Maps atau koordinat">
+                    </div>
                     <button onclick="submitNewStudent()" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl mt-2 shadow-md">Simpan Siswa Baru</button>
                 </div>
             `;
@@ -1232,7 +1546,7 @@ async function sendAlfaLateRecap() {
             const gender = document.getElementById('newStudGender').value;
             const phone = document.getElementById('newStudPhone').value.trim();
             if(!name || !nis) { showToast('Peringatan', 'Nama dan NISN wajib diisi.'); return; }
-            run(async () => { const { error } = await sb.from('students').insert({ nis, name, gender, phone }); if (error) throw error; closeModal(); },
+            run(async () => { const mp = normMapLink((document.getElementById('newStudMap') || {}).value); if (mp === null) throw new Error('Link/koordinat Google Maps tidak valid.'); const { error } = await sb.from('students').insert(mp ? { nis, name, gender, phone, map_link: mp } : { nis, name, gender, phone }); if (error) throw error; closeModal(); },
                 ['Berhasil', `Siswa ${name} berhasil ditambahkan.`], 'accounts');
         }
 
@@ -1313,7 +1627,7 @@ async function sendAlfaLateRecap() {
                                 <div class="flex justify-between border-b pb-2"><span class="text-gray-400 font-medium">Nama Orang Tua / Wali</span><span class="font-bold text-santara-navy">${s.parent || '-'}</span></div>
                                 <div class="flex justify-between border-b pb-2"><span class="text-gray-400 font-medium">WhatsApp Orang Tua</span><a href="https://wa.me/${s.parentPhone}" target="_blank" class="text-green-600 font-bold hover:underline"><i class="fa-brands fa-whatsapp mr-1"></i>${s.parentPhone || '-'}</a></div>
                                 <div class="flex justify-between border-b pb-2"><span class="text-gray-400 font-medium">Alamat Tempat Tinggal</span><span class="font-medium">${s.address || 'Kendal'}</span></div>
-                                <div class="flex justify-between items-center pt-1"><span class="text-gray-400 font-medium">Titik Maps</span><a href="${s.mapLink}" target="_blank" class="text-santara-teal font-bold hover:underline bg-teal-50 px-3 py-1 rounded-xl border border-teal-200"><i class="fa-solid fa-location-dot mr-1"></i> Buka Peta</a></div>
+                                <div class="flex justify-between items-center pt-1"><span class="text-gray-400 font-medium">Titik Maps</span><a href="${safeMapHref(s.mapLink)}" target="_blank" class="text-santara-teal font-bold hover:underline bg-teal-50 px-3 py-1 rounded-xl border border-teal-200"><i class="fa-solid fa-location-dot mr-1"></i> Buka Peta</a></div>
                             </div>
                         </div>
                     </div>
@@ -1386,7 +1700,7 @@ async function sendAlfaLateRecap() {
                     <h3 class="font-bold text-sm">Edit Biodata Diri & Unggah Foto Lokal (${s.name})</h3>
                     <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button>
                 </div>
-                <div class="p-6 space-y-4 text-xs">
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
                     <div>
                         <label class="block font-bold mb-1">UNGGAH FOTO PROFIL LOKAL DARI PERANGKAT</label>
                         <input type="file" id="localAvatarFile" accept="image/*" class="w-full p-2.5 border rounded-xl font-medium bg-gray-50">
@@ -1417,6 +1731,11 @@ async function sendAlfaLateRecap() {
                         <label class="block font-bold mb-1">ALAMAT TEMPAT TINGGAL</label>
                         <input type="text" id="editAddress" value="${s.address || ''}" class="w-full p-3 border rounded-xl">
                     </div>
+                    <div>
+                        <label class="block font-bold mb-1">LINK GOOGLE MAPS / KOORDINAT RUMAH</label>
+                        <input type="text" id="editMap" value="${s.mapLink && s.mapLink !== DEFAULT_MAP ? esc(s.mapLink) : ''}" placeholder="Tempel link Google Maps atau koordinat (-6.93, 110.20)" class="w-full p-3 border rounded-xl">
+                        <p class="text-[10px] text-gray-400 mt-1">Di Google Maps: tekan lama titik rumah, lalu Bagikan dan salin link.</p>
+                    </div>
                     ${mockState.currentRole === 'siswa' ? `<div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block font-bold mb-1">JENIS KELAMIN</label>
@@ -1427,7 +1746,9 @@ async function sendAlfaLateRecap() {
                             <input type="password" id="editNewPw" autocomplete="new-password" placeholder="Kosongkan jika tidak diganti" class="w-full p-3 border rounded-xl">
                         </div>
                     </div>` : ''}
-                    <button onclick="saveStudentBiodata(${s.id})" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan Perubahan Data</button>
+                    <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+                        <button onclick="saveStudentBiodata(${s.id})" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan Perubahan Data</button>
+                    </div>
                 </div>
             `;
             modal.classList.add('flex');
@@ -1439,10 +1760,12 @@ async function sendAlfaLateRecap() {
                 const g = id => { const e = document.getElementById(id); return e ? e.value : ''; };
                 const pw = g('editNewPw');
                 if (pw && pw.length < 6) { showToast('Peringatan', 'Password baru minimal 6 karakter.'); return; }
+                const mp = normMapLink(g('editMap'));
+                if (mp === null) { showToast('Peringatan', 'Link/koordinat Google Maps tidak valid.'); return; }
                 const fi = document.getElementById('localAvatarFile');
                 const saveSelf = (avatar) => {
                     run(async () => {
-                        let r = await sb.rpc('student_update_profile', { p_token: studentToken, p_name: g('editName'), p_gender: g('editGender'), p_phone: g('editPhone'), p_parent: g('editParent'), p_parent_phone: g('editParentPhone'), p_address: g('editAddress'), p_avatar: avatar || null });
+                        let r = await sb.rpc('student_update_profile', { p_token: studentToken, p_name: g('editName'), p_gender: g('editGender'), p_phone: g('editPhone'), p_parent: g('editParent'), p_parent_phone: g('editParentPhone'), p_address: g('editAddress'), p_avatar: avatar || null, p_map_link: mp || null });
                         if (r.error) throw r.error;
                         if (pw) { r = await sb.rpc('student_change_password', { p_token: studentToken, p_new: pw }); if (r.error) throw r.error; }
                         closeModal();
@@ -1456,6 +1779,9 @@ async function sendAlfaLateRecap() {
             const upd = { phone: document.getElementById('editPhone').value, parent: document.getElementById('editParent').value, parent_phone: document.getElementById('editParentPhone').value, address: document.getElementById('editAddress').value };
             if (nameEl && nameEl.value.trim()) upd.name = nameEl.value.trim();
             if (nisEl && nisEl.value.trim()) upd.nis = nisEl.value.trim();
+            const mpt = normMapLink((document.getElementById('editMap') || {}).value);
+            if (mpt === null) { showToast('Peringatan', 'Link/koordinat Google Maps tidak valid.'); return; }
+            if (mpt) upd.map_link = mpt;
             const save = (avatar) => {
                 if (avatar) upd.avatar = avatar;
                 run(async () => { const { error } = await sb.from('students').update(upd).eq('id', studentId); if (error) throw error; closeModal(); },
@@ -1591,6 +1917,7 @@ async function sendAlfaLateRecap() {
             const file = (document.getElementById('myPermFile').files || [])[0];
             if (!reason) { showToast('Peringatan', 'Alasan wajib diisi.'); return; }
             if (needSb()) return;
+            if (mockState.permissions.some(p => p.rawDate === date && p.status !== 'REJECTED')) { showToast('Peringatan', 'Pengajuan izin/sakit untuk tanggal ini sudah ada (maksimal 1x per tanggal).'); return; }
             const cu = mockState.currentUser, sc = mockState.schoolConfig;
             const w = window.open('', '_blank');   // dibuka lebih dulu agar tidak diblokir browser
             const lampiran = file
@@ -1674,6 +2001,8 @@ async function sendAlfaLateRecap() {
         async function recordScan(text) {
             const code = String(text).trim();
             if (!code || !studentToken || needSb()) return;
+            const me0 = mockState.students[0];
+            if (me0 && me0.status && me0.status !== 'BELUM') { showToast('Sudah Absen', `Anda sudah tercatat ${me0.status} hari ini (maksimal 1x per hari).`); stopCameraAndBack(); return; }
             const now = Date.now();
             if (lastScan.nis === code && now - lastScan.at < 4000) return;   // cegah scan ganda beruntun
             lastScan = { nis: code, at: now };
@@ -1683,7 +2012,7 @@ async function sendAlfaLateRecap() {
                 showToast('Absensi Berhasil', `${data.name} • ${data.status} pukul ${data.time}`);
                 await refreshData();
                 stopCameraAndBack();
-            } catch (e) { showToast('Gagal', errMsg(e)); }
+            } catch (e) { showToast('Gagal', errMsg(e)); if (/SUDAH_ABSEN/.test(String(e && e.message))) stopCameraAndBack(); }
         }
         function manualScanPrompt() {
             const code = prompt('Tempelkan kode QR yang tampil di layar Petugas / Wali Kelas:');
@@ -2658,4 +2987,4 @@ _Wali Kelas ${unesc(sc.teacherName)}_`;
         }
     </script>
 </body>
-</html>
+</html>F
