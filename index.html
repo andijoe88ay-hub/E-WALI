@@ -294,12 +294,12 @@
         const SUPABASE_URL = 'https://llalvnlzwfuywtysitjg.supabase.co';
         // LOGO (opsional): unggah file gambar ke folder yang sama dengan index.html, lalu isi nama filenya di sini.
         // Contoh: const LOGO_SANTARA_URL = 'logo-santara.png';  const LOGO_SEKOLAH_URL = 'logo-sekolah.png';
-        const LOGO_SANTARA_URL = 'logo-santara.png';
+        const LOGO_SANTARA_URL = '';
         const LOGO_SEKOLAH_URL = '';
         // Foto latar halaman login (opsional, tampil di sisi kiri komputer). Contoh: 'login-bg.jpg'
-        const LOGIN_BG_URL = 'login-bg.png';
+        const LOGIN_BG_URL = '';
         const LOGO_SANTARA_SRC = LOGO_SANTARA_URL || window.SANTARA_LOGO_EMBED || '';
-        const SUPABASE_ANON_KEY = 'sb_publishable_9Ko7suUCCY44TuB9yuT0Cg_V9q6s7Jw';
+        const SUPABASE_ANON_KEY = 'GANTI-DENGAN-ANON-PUBLIC-KEY';
         // anon key AMAN dipublikasikan; data dilindungi RLS di database.
         const sb = (window.supabase && !SUPABASE_URL.includes('GANTI-DENGAN') && !SUPABASE_ANON_KEY.includes('GANTI-DENGAN'))
             ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
@@ -392,7 +392,8 @@
                 sb.from('students').select('*').order('nis'),
                 fetchAllRows(() => sb.from('attendance').select('student_id,att_date,status,scan_time,created_at,updated_at').order('att_date', { ascending: false }).order('id', { ascending: false })),
                 q('violations'), q('counseling'), q('home_visits'), q('permissions'),
-                sb.from('holidays').select('*').order('h_date', { ascending: true }).then(r => r.error ? { data: [], error: null } : r)
+                sb.from('holidays').select('*').order('h_date', { ascending: true }).then(r => r.error ? { data: [], error: null } : r),
+                sb.from('rules').select('*').order('sort', { ascending: true }).then(r => r.error ? { data: [], error: null } : r)
             ]);
             res.forEach(r => { if (r.error) throw r.error; });
             let prof = res[0].data;
@@ -408,6 +409,8 @@
             mockState.conditionLabels = prof.condition_labels || {};
 
             mockState.holidays = res[7].data.map(h => ({ id: h.id, date: h.h_date, name: h.name, type: h.type }));
+            mockState._disc = {}; mockState._limit = 0;
+            mockState.rules = res[8].data.map(r => ({ id: r.id, code: r.code, article: r.article, name: r.name, points: r.points, unit: r.unit, protected: !!r.protected, critical: !!r.critical, referral: !!r.referral, auto: !!r.auto, active: r.active !== false, sort: r.sort || 0 }));
             mockState.autoAlfaStart = prof.auto_alfa_start || '';
             const attSet = new Set(res[2].data.map(a => a.student_id + '|' + a.att_date));
             const derived = buildDerivedAlfa(res[1].data.filter(r => r.is_active).map(r => ({ id: r.id, created: jktDate(r.created_at) })), attSet,
@@ -432,7 +435,7 @@
                 byId[r.id] = st; return st;
             });
             const who = id => byId[id] || { name: 'Siswa (dihapus)', nis: '-' };
-            mockState.violations = res[3].data.map(r => ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.vio_date), violation: esc(r.violation), category: r.category, points: r.points, action: esc(r.action) }));
+            mockState.violations = res[3].data.map(r => ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, pts: r.pts != null ? r.pts : Math.abs(r.points || 0), status: r.status || 'TERBUKTI', ruleId: r.rule_id, qty: r.qty || 1, reporter: esc(r.reporter || ''), cancelReason: esc(r.cancel_reason || ''), studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.vio_date), violation: esc(r.violation), category: r.category, points: r.points, action: esc(r.action) }));
             mockState.counseling = res[4].data.map(r => ({ id: r.id, createdAt: r.created_at, rawDate: r.c_date, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
             mockState.homeVisits = res[5].data.map(r => ({ id: r.id, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: r.evidence_url }));
             mockState.permissions = res[6].data.map(r => ({ id: r.id, studentId: r.student_id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, category: r.category, date: fmtDate(r.perm_date), rawDate: r.perm_date, reason: esc(r.reason), status: r.status, evidenceType: 'whatsapp', evidenceUrl: r.evidence_url || `https://wa.me/${sc.teacherPhone}` }));
@@ -477,11 +480,13 @@
         // sesudah tindak lanjut terakhir dan siswa masih berada di atas batas.
         function computeAlert(st) {
             const alfaRows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.status === 'ALFA' && isSchoolDay(a.date));
-            const viols = mockState.violations.filter(v => v.nis === st.nis);
-            const pts = getStudentPoints(st);
+            const viols = mockState.violations.filter(v => v.nis === st.nis && v.status !== 'BATAL');
+            const dsc = computeDiscipline(st);
+            const pts = dsc.karakter;
             const reasons = [];
             if (alfaRows.length >= 3) reasons.push(`Alfa ${alfaRows.length}x`);
-            if (pts < 75) reasons.push(`Poin karakter ${pts}/100`);
+            if (dsc.stage >= 1) reasons.push(`${STAGES[dsc.stage][0]} (${dsc.total} poin)`);
+            if (dsc.alfaPct >= 50 && alfaRows.length < dsc.limit) reasons.push(`Alfa ${dsc.alfaPct}% dari batas`);
             if (!reasons.length) return null;
             const ivs = mockState.counseling.filter(c => c.nis === st.nis && c.status === 'SELESAI' && c.createdAt)
                 .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -558,7 +563,7 @@
             const sc = mockState.schoolConfig;
             const lines = [];
             if (info.alfa >= 3) lines.push(`• Kehadiran: tercatat ALFA ${info.alfa} kali`);
-            if (info.pts < 75) lines.push(`• Poin karakter: ${info.pts} / 100`);
+            if (info.pts <= 75) lines.push(`• Poin pelanggaran: ${100 - info.pts} (${STAGES[computeDiscipline(st).stage][0]})`);
             const esk = info.level > 0 ? `\n\n*Catatan:* ini adalah peringatan lanjutan (eskalasi ke-${info.level}) karena masih ada ${info.newViol} pelanggaran dan ${info.newAlfa} alfa baru setelah pembinaan sebelumnya.` : '';
             const msg = `Assalamualaikum Wr. Wb. Bapak/Ibu ${unesc(st.parent)},\n\nKami dari Wali Kelas ${sc.className} menyampaikan perhatian terkait ananda *${unesc(st.name)}* (NISN: ${st.nis}):\n\n${lines.join('\n') || '• Perlu perhatian bersama'}${esk}\n\nMohon Bapak/Ibu berkenan berkomunikasi dengan Wali Kelas atau hadir ke sekolah untuk bersama-sama membina ananda. Terima kasih.\n_Wali Kelas ${unesc(sc.teacherName)}_`;
             const num = waNum(st.parentPhone);
@@ -657,7 +662,7 @@
         function teladanBadgeHtml(user) {
             const sm = user.attendanceSummary || {};
             const total = (sm.hadir || 0) + (sm.terlambat || 0) + (sm.sakit || 0) + (sm.izin || 0) + (sm.alfa || 0);
-            const viols = mockState.violations.filter(v => v.nis === user.nis).length;
+            const viols = mockState.violations.filter(v => v.nis === user.nis && v.status !== 'BATAL').length;
             if (!(total > 0 && (sm.alfa || 0) === 0 && getStudentPoints(user) === 100 && viols === 0)) return '';
             return `
                 <div class="rounded-3xl p-5 md:p-6 bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 text-amber-950 shadow-lg flex items-center gap-4 border border-amber-300">
@@ -903,7 +908,7 @@
             const t = todayISO();
             const from = top5Mode === '30' ? dateAddDays(t, -29) : top5Mode === 'month' ? t.slice(0, 8) + '01' : '0000-01-01';
             const out = [];
-            mockState.violations.forEach(v => { if ((v.rawDate || '') >= from) out.push({ key: normKey(v.violation), label: v.violation, nis: v.nis, date: v.rawDate, source: 'Pelanggaran', detail: `${v.points} poin • ${v.action}` }); });
+            mockState.violations.forEach(v => { if (v.status !== 'BATAL' && (v.rawDate || '') >= from) out.push({ key: normKey(v.violation), label: v.violation, nis: v.nis, date: v.rawDate, source: 'Pelanggaran', detail: `${v.points} poin • ${v.action}` }); });
             // catatan "Tindak Lanjut Early Warning" adalah penanganan, bukan masalah baru, jadi tidak dihitung ganda
             mockState.counseling.forEach(c => { if (c.category !== 'Tindak Lanjut Early Warning' && (c.rawDate || '') >= from) out.push({ key: normKey(c.category), label: c.category, nis: c.nis, date: c.rawDate, source: 'Pembinaan', detail: `${c.status} • ${c.action}` }); });
             return out;
@@ -1032,6 +1037,73 @@
                 (ev.length ? `<div class="divide-y divide-gray-50">${ev.slice(0, 8).map(activityItemHtml).join('')}</div><button onclick="openActivityAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua</button>` : emptyBox('fa-clock-rotate-left', 'Belum ada aktivitas tercatat.')));
         }
 
+        // ---------- Mesin poin kedisiplinan, tahap I–IV, katalog bobot ----------
+        const STAGES = [['Aman', 'bg-green-100 text-green-800'], ['Tahap I • Waspada', 'bg-yellow-100 text-yellow-800'], ['Tahap II • SP1', 'bg-orange-100 text-orange-800'], ['Tahap III • SP2', 'bg-red-100 text-red-800'], ['Tahap IV • Kritis / Siap Pleno', 'bg-red-700 text-white']];
+        function ruleById(id) { return (mockState.rules || []).find(r => r.id === id) || null; }
+        function ruleW(code, def) { const r = (mockState.rules || []).find(x => x.code === code); return r ? r.points : def; }
+        function yearBounds() {
+            const ay = String(mockState.schoolConfig.academicYear || '').split('/').map(Number);
+            const y1 = ay[0] || new Date().getFullYear(), y2 = ay[1] || y1 + 1;
+            return { from: `${y1}-07-01`, to: `${y2}-06-30` };
+        }
+        // Total poin = terlambat × bobot + alfa × bobot + poin pelanggaran terbukti (dalam tahun ajaran, hanya hari sekolah).
+        // Tahap: ≥25 I, ≥50 II, ≥75 III, ≥100 IV. Pelanggaran kritis atau Alfa melewati batas 20% = Tahap IV (siap pleno, keputusan tetap manusia).
+        function computeDiscipline(st) {
+            const cache = mockState._disc || (mockState._disc = {});
+            if (cache[st.id] && st.id != null) return cache[st.id];
+            const { from, to } = yearBounds();
+            const rows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.date >= from && a.date <= to && isSchoolDay(a.date));
+            const late = rows.filter(a => a.status === 'TERLAMBAT').length;
+            const alfa = rows.filter(a => a.status === 'ALFA').length;
+            const vs = mockState.violations.filter(v => v.nis === st.nis && (v.status || 'TERBUKTI') === 'TERBUKTI' && (v.rawDate || '') >= from && (v.rawDate || '') <= to);
+            const violPts = vs.reduce((n, v) => n + (v.pts || 0), 0);
+            const critical = vs.some(v => (ruleById(v.ruleId) || {}).critical);
+            const total = late * ruleW('TERLAMBAT', 1) + alfa * ruleW('ALFA', 2) + violPts;
+            const limit = alfaLimitDays();
+            let stage = total >= 100 ? 4 : total >= 75 ? 3 : total >= 50 ? 2 : total >= 25 ? 1 : 0;
+            if (critical || alfa >= limit) stage = 4;
+            const out = { late, alfa, violPts, total, stage, limit, alfaPct: Math.round(alfa * 100 / limit), critical, karakter: Math.max(0, 100 - total) };
+            if (st.id != null) cache[st.id] = out;
+            return out;
+        }
+        function studentDisciplineCardHtml(user) {
+            const d = computeDiscipline(user), stg = STAGES[d.stage];
+            return `<div class="bg-white rounded-3xl p-6 border border-santara-border shadow-sm space-y-4">
+                <div class="flex items-center justify-between border-b pb-3.5"><div class="flex items-center space-x-2.5"><i class="fa-solid fa-shield-halved text-santara-teal text-lg"></i><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Status Kedisiplinan</h3></div><span class="px-2.5 py-1 rounded-full text-[11px] font-extrabold ${stg[1]}">${stg[0]}</span></div>
+                <div><div class="flex justify-between text-xs mb-1"><span class="font-semibold text-gray-600">Poin pelanggaran</span><span class="font-black text-santara-navy">${d.total} / 100</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full ${d.total >= 75 ? 'bg-red-500' : d.total >= 50 ? 'bg-orange-400' : d.total >= 25 ? 'bg-yellow-400' : 'bg-green-500'}" style="width:${Math.min(100, d.total)}%"></div></div></div>
+                <div><div class="flex justify-between text-xs mb-1"><span class="font-semibold text-gray-600">Alfa tahun ajaran ini</span><span class="font-black text-santara-navy">${d.alfa} / ${d.limit} hari</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full ${d.alfaPct >= 75 ? 'bg-red-500' : d.alfaPct >= 50 ? 'bg-yellow-400' : 'bg-blue-500'}" style="width:${Math.min(100, d.alfaPct)}%"></div></div><p class="text-[10px] text-gray-400 mt-1">Batas maksimal Alfa 20% dari hari efektif belajar.</p></div>
+            </div>`;
+        }
+        function openRulesManager() {
+            const rules = mockState.rules || [];
+            if (!rules.length) { showToast('Info', 'Katalog aturan belum aktif. Jalankan santara_supabase_v8_katalog_aturan.sql di Supabase.'); return; }
+            const rows = ['Kehadiran', 'Ringan', 'Sedang', 'Berat', 'Kritis'].map(g => {
+                const rs = rules.filter(r => r.article === g); if (!rs.length) return '';
+                return `<div><h4 class="font-extrabold text-santara-textSec uppercase tracking-wider mb-1">${g}</h4><div class="divide-y divide-gray-100">${rs.map(r => `<div class="flex items-center justify-between py-2 gap-3">
+                    <span class="min-w-0"><span class="block font-semibold text-santara-navy truncate">${esc(r.name)}</span><span class="block text-[10px] text-gray-400">per ${r.unit}${r.auto ? ' • otomatis dari absensi' : ''}${r.critical ? ' • kritis' : ''}</span></span>
+                    <span class="flex items-center gap-2 shrink-0"><input type="number" id="rl_${r.id}" min="0" max="100" value="${r.points}" class="w-16 p-2 border rounded-lg text-center font-bold"><label class="text-[10px] text-gray-500 flex items-center gap-1"><input type="checkbox" id="rla_${r.id}" ${r.active ? 'checked' : ''}>aktif</label></span></div>`).join('')}</div></div>`;
+            }).join('');
+            const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Aturan & Bobot Poin</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    <div class="p-3 bg-sky-50 border border-sky-200 rounded-xl text-sky-900 font-semibold leading-relaxed">Bobot Terlambat dan Alfa berlaku untuk seluruh tahun ajaran. Pelanggaran yang sudah dicatat tetap memakai poin saat dicatat. Aturan yang dinonaktifkan tidak muncul di form.</div>
+                    ${rows}
+                    <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+                        <button onclick="saveRules()" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan Perubahan</button></div>
+                </div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function saveRules() {
+            if (needSb()) return;
+            const ch = (mockState.rules || []).map(r => ({ r, p: parseInt((document.getElementById('rl_' + r.id) || {}).value), a: !!(document.getElementById('rla_' + r.id) || {}).checked }))
+                .filter(x => Number.isFinite(x.p) && x.p >= 0 && x.p <= 100 && (x.p !== x.r.points || x.a !== x.r.active));
+            if (!ch.length) { closeModal(); return; }
+            run(async () => { for (const c of ch) { const { error } = await sb.from('rules').update({ points: c.p, active: c.a }).eq('id', c.r.id); if (error) throw error; } closeModal(); },
+                ['Tersimpan', 'Bobot aturan diperbarui.'], 'violations');
+        }
+
         // ---------- Alfa otomatis, pencegahan dini kehadiran, koreksi absensi ----------
         function jktDate(ts) { return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }); }
         // Hari sekolah tanpa catatan absensi dan tanpa izin (belum ditolak) = Alfa setelah 2x24 jam, mulai tanggal yang ditetapkan wali.
@@ -1054,9 +1126,10 @@
         }
         // Batas Alfa = 20% dari hari efektif tahun ajaran (Juli–Juni, dihitung dari kalender dan hari libur).
         function alfaLimitDays() {
+            if (mockState._limit) return mockState._limit;
             const ay = String(mockState.schoolConfig.academicYear || '').split('/').map(Number);
             const y1 = ay[0] || new Date().getFullYear(), y2 = ay[1] || y1 + 1;
-            return Math.max(1, Math.ceil(countSchoolDays(`${y1}-07-01`, `${y2}-06-30`) * 0.2));
+            return (mockState._limit = Math.max(1, Math.ceil(countSchoolDays(`${y1}-07-01`, `${y2}-06-30`) * 0.2)));
         }
         function preventionHint(level) {
             if (level === 0) return 'Pencegahan dini: hubungi orang tua hari ini, gali penyebab, dan sepakati rencana perbaikan.';
@@ -1297,6 +1370,8 @@
             mockState.qrSettings.startTime = p.qr_start;
             mockState.qrSettings.toleranceTime = p.qr_tolerance;
             mockState.holidays = (me.holidays || []).map(h => ({ date: h.h_date, name: h.name, type: h.type }));
+            mockState._disc = {}; mockState._limit = 0;
+            mockState.rules = (me.rules || []).map(r => ({ id: r.id, code: r.code, article: r.article, name: r.name, points: r.points, unit: r.unit, protected: !!r.protected, critical: !!r.critical, referral: !!r.referral, auto: !!r.auto, active: r.active !== false, sort: r.sort || 0 }));
             mockState.autoAlfaStart = p.auto_alfa_start || '';
             const aset = new Set(me.attendance.map(a => r.id + '|' + a.att_date));
             me.attendance = me.attendance.concat(buildDerivedAlfa([{ id: r.id, created: jktDate(r.created_at) }], aset, me.permissions.map(x => ({ sid: r.id, date: x.perm_date, status: x.status })))
@@ -1310,7 +1385,7 @@
             mockState.students = [st];
             mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at, derived: !!a.derived }));
             const who = { studentName: st.name, nis: st.nis };
-            mockState.violations = me.violations.map(x => ({ id: x.id, rawDate: x.vio_date, createdAt: x.created_at, ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }));
+            mockState.violations = me.violations.filter(x => x.status !== 'BATAL').map(x => { const r = x; return ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, pts: r.pts != null ? r.pts : Math.abs(r.points || 0), status: r.status || 'TERBUKTI', ruleId: r.rule_id, qty: r.qty || 1, reporter: esc(r.reporter || ''), cancelReason: esc(r.cancel_reason || ''), ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }); });
             mockState.counseling = me.counseling.map(x => ({ id: x.id, createdAt: x.created_at, rawDate: x.c_date, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
             mockState.homeVisits = me.home_visits.map(x => ({ id: x.id, ...who, date: fmtDate(x.visit_date), officer: esc(x.officer), reason: esc(x.reason), result: esc(x.result), status: x.status, evidenceUrl: x.evidence_url }));
             mockState.permissions = me.permissions.map(x => ({ id: x.id, studentId: r.id, ...who, category: x.category, date: fmtDate(x.perm_date), rawDate: x.perm_date, reason: esc(x.reason), status: x.status, evidenceType: 'whatsapp', evidenceUrl: x.evidence_url || `https://wa.me/${waNum(sc.teacherPhone)}` }));
@@ -1393,11 +1468,8 @@
         let currentReportTab = 'kehadiran';
 
         // Helper to dynamically calculate student points based on violations
-        function getStudentPoints(student) {
-            const studentViolations = mockState.violations.filter(v => v.nis === student.nis);
-            const totalDeduction = studentViolations.reduce((sum, v) => sum + (v.points || 0), 0);
-            return Math.max(0, 100 + totalDeduction);
-        }
+        // Skor Karakter = 100 dikurangi total poin pelanggaran (mesin poin: computeDiscipline)
+        function getStudentPoints(student) { return computeDiscipline(student).karakter; }
 
         window.onload = async function() {
             startClock();
@@ -1861,6 +1933,8 @@ async function sendAlfaLateRecap() {
                             <div class="p-2.5 bg-red-50 rounded-xl border border-red-200"><span class="block text-[10px] text-red-800 font-bold">ALFA</span><span class="text-base font-black text-red-700">${(user.attendanceSummary || {}).alfa || 0}</span></div>
                         </div>
                     </div>
+
+                    ${studentDisciplineCardHtml(user)}
 
                     <div class="bg-white rounded-3xl p-6 border border-red-200 shadow-sm space-y-4">
                         <div class="flex items-center justify-between border-b pb-3.5">
@@ -3273,12 +3347,12 @@ async function sendAlfaLateRecap() {
                 <div class="space-y-6">
                     <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm flex items-center justify-between">
                         <div>
-                            <h3 class="text-lg font-bold text-santara-navy">Pencatatan Pelanggaran & Poin Karakter</h3>
-                            <p class="text-xs text-santara-textSec mt-0.5">Basis 100 Poin Karakter • Setiap pelanggaran akan otomatis memotong poin siswa.</p>
+                            <h3 class="text-lg font-bold text-santara-navy">Pencatatan Pelanggaran & Poin Kedisiplinan</h3>
+                            <p class="text-xs text-santara-textSec mt-0.5">Poin pelanggaran akumulatif per tahun ajaran • Tahap I ≥25, II ≥50, III ≥75, IV ≥100 • Bobot mengikuti katalog aturan.</p>
                         </div>
-                        <button onclick="openAddViolationModal()" class="px-5 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl text-xs font-bold transition shadow-md">
+                        <div class="flex gap-2 flex-wrap justify-end"><button onclick="openRulesManager()" class="px-4 py-3 bg-white border border-santara-border hover:bg-gray-50 text-santara-navy rounded-2xl text-xs font-bold transition"><i class="fa-solid fa-sliders mr-1"></i> Aturan & Bobot</button><button onclick="openAddViolationModal()" class="px-5 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl text-xs font-bold transition shadow-md">
                             <i class="fa-solid fa-plus mr-1"></i> Catat Pelanggaran Baru
-                        </button>
+                        </button></div>
                     </div>
 
                     <div class="bg-white rounded-3xl border border-santara-border shadow-sm overflow-hidden">
@@ -3297,15 +3371,15 @@ async function sendAlfaLateRecap() {
                                 </thead>
                                 <tbody class="divide-y divide-gray-100">
                                     ${mockState.violations.length === 0 ? `<tr><td colspan="7" class="p-6 text-center text-gray-400">Belum ada catatan pelanggaran.</td></tr>` : mockState.violations.map(v => `
-                                        <tr class="hover:bg-gray-50 transition">
+                                        <tr class="hover:bg-gray-50 transition ${v.status === 'BATAL' ? 'opacity-50' : ''}">
                                             <td class="p-3.5 text-gray-600 font-medium">${v.date}</td>
                                             <td class="p-3.5 font-bold text-santara-navy">${v.studentName}<br><span class="font-mono text-[10px] text-gray-500">${v.nis}</span></td>
-                                            <td class="p-3.5 text-gray-800 font-medium">${v.violation}</td>
+                                            <td class="p-3.5 text-gray-800 font-medium ${v.status === 'BATAL' ? 'line-through' : ''}">${v.violation}${v.status === 'DUGAAN' ? ' <span class="px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded text-[10px] font-bold no-underline">Dugaan</span>' : ''}${v.status === 'BATAL' ? ' <span class="px-1.5 py-0.5 bg-gray-200 text-gray-700 rounded text-[10px] font-bold">Dibatalkan</span>' : ''}${v.reporter ? `<br><span class="text-[10px] text-gray-400">Pelapor: ${v.reporter}</span>` : ''}</td>
                                             <td class="p-3.5"><span class="px-2.5 py-1 bg-red-50 text-red-700 rounded-lg font-bold">${v.category}</span></td>
-                                            <td class="p-3.5 font-mono font-bold text-red-600">${v.points} Poin</td>
+                                            <td class="p-3.5 font-mono font-bold text-red-600">${v.status === 'BATAL' ? '—' : '+' + v.pts + ' Poin'}</td>
                                             <td class="p-3.5 text-gray-600 font-medium">${v.action}</td>
                                             <td class="p-3.5 text-right">
-                                                <button onclick="deleteViolation(${v.id})" class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl font-bold text-[10px]"><i class="fa-solid fa-trash"></i></button>
+                                                ${v.status === 'BATAL' ? '' : `<button onclick="cancelViolation(${v.id})" title="Batalkan catatan" class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl font-bold text-[10px]"><i class="fa-solid fa-ban"></i></button>`}
                                             </td>
                                         </tr>
                                     `).join('')}
@@ -3318,6 +3392,8 @@ async function sendAlfaLateRecap() {
         }
 
         function openAddViolationModal() {
+            const rules = (mockState.rules || []).filter(r => r.active && !r.auto);
+            const opts = ['Kehadiran', 'Ringan', 'Sedang', 'Berat', 'Kritis'].map(g => { const rs = rules.filter(r => r.article === g); return rs.length ? `<optgroup label="${g}">${rs.map(r => `<option value="${r.id}">${esc(r.name)} (+${r.points}/${r.unit})</option>`).join('')}</optgroup>` : ''; }).join('');
             const modal = document.getElementById('modalContainer');
             const box = document.getElementById('modalContentBox');
             box.innerHTML = `
@@ -3325,7 +3401,7 @@ async function sendAlfaLateRecap() {
                     <h3 class="font-bold text-sm">Form Pencatatan Pelanggaran & Poin Kedisiplinan</h3>
                     <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button>
                 </div>
-                <div class="p-6 space-y-4 text-xs">
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
                     <div>
                         <label class="block font-bold mb-1 uppercase">PILIH SISWA</label>
                         <select id="violStudentId" class="w-full p-3.5 border rounded-xl font-semibold bg-gray-50">
@@ -3334,43 +3410,74 @@ async function sendAlfaLateRecap() {
                     </div>
                     <div>
                         <label class="block font-bold mb-1 uppercase">BENTUK PELANGGARAN</label>
-                        <input type="text" id="violDesc" class="w-full p-3.5 border rounded-xl" placeholder="Contoh: Terlambat hadir / Tidak sopan...">
+                        <select id="violRule" onchange="onViolRuleChange()" class="w-full p-3.5 border rounded-xl">${opts}<option value="0">Lainnya (isi manual)</option></select>
+                        <p class="text-[10px] text-gray-400 mt-1">Terlambat dan Alfa dihitung otomatis dari absensi, tidak dicatat di sini.</p>
+                    </div>
+                    <div id="violManualBox" class="hidden space-y-3">
+                        <input type="text" id="violDesc" class="w-full p-3.5 border rounded-xl" placeholder="Uraian pelanggaran">
+                        <select id="violCategory" class="w-full p-3.5 border rounded-xl"><option value="Ringan">Ringan</option><option value="Sedang">Sedang</option><option value="Berat">Berat</option></select>
                     </div>
                     <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="block font-bold mb-1 uppercase">KATEGORI</label>
-                            <select id="violCategory" class="w-full p-3.5 border rounded-xl">
-                                <option value="Ringan">Ringan</option>
-                                <option value="Sedang">Sedang</option>
-                                <option value="Berat">Berat</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block font-bold mb-1 uppercase">JUMLAH POIN PENGURANG</label>
-                            <input type="number" id="violPoints" class="w-full p-3.5 border rounded-xl" value="5">
-                        </div>
+                        <div><label id="violQtyLabel" class="block font-bold mb-1 uppercase">JUMLAH (KEJADIAN)</label><input type="number" id="violQty" min="1" value="1" oninput="onViolRuleChange()" class="w-full p-3.5 border rounded-xl"></div>
+                        <div><label class="block font-bold mb-1 uppercase">POIN PELANGGARAN</label><input type="number" id="violPoints" min="1" value="1" class="w-full p-3.5 border rounded-xl bg-gray-50" readonly></div>
+                    </div>
+                    <div id="violNote" class="hidden p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold"></div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div><label class="block font-bold mb-1 uppercase">PELAPOR</label><input type="text" id="violReporter" class="w-full p-3.5 border rounded-xl" placeholder="mis. Guru Piket"></div>
+                        <div><label class="block font-bold mb-1 uppercase">STATUS</label><select id="violStatus" class="w-full p-3.5 border rounded-xl"><option value="TERBUKTI">Terbukti</option><option value="DUGAAN">Dugaan (belum dihitung)</option></select></div>
                     </div>
                     <div>
                         <label class="block font-bold mb-1 uppercase">TINDAKAN PEMBINAAN</label>
                         <input type="text" id="violAction" class="w-full p-3.5 border rounded-xl" value="Pembinaan wali kelas & surat komitmen">
                     </div>
-                    <button onclick="submitViolation()" class="w-full py-3.5 bg-red-600 text-white font-bold rounded-xl shadow-md">Simpan & Potong Poin Karakter Siswa</button>
+                    <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+                        <button onclick="submitViolation()" class="w-full py-3.5 bg-red-600 text-white font-bold rounded-xl shadow-md">Simpan Pelanggaran</button>
+                    </div>
                 </div>
             `;
             modal.classList.add('flex');
             modal.classList.remove('hidden');
+            onViolRuleChange();
         }
-
+        function onViolRuleChange() {
+            const r = (mockState.rules || []).find(x => x.id === Number((document.getElementById('violRule') || {}).value));
+            const qty = Math.max(1, parseInt((document.getElementById('violQty') || {}).value) || 1);
+            const pts = document.getElementById('violPoints');
+            document.getElementById('violManualBox').classList.toggle('hidden', !!r);
+            document.getElementById('violQtyLabel').innerText = r ? `JUMLAH (${String(r.unit).toUpperCase()})` : 'JUMLAH (KEJADIAN)';
+            pts.readOnly = !!r; pts.classList.toggle('bg-gray-50', !!r);
+            if (r) pts.value = r.points * qty;
+            const notes = [];
+            if (r && r.critical) notes.push('Pelanggaran kritis: langsung Tahap IV (siap pleno) dan tidak dapat diputihkan.');
+            if (r && r.referral) notes.push('Kasus ini perlu dirujuk ke tim penanganan sekolah.');
+            const nb = document.getElementById('violNote'); nb.innerText = notes.join(' '); nb.classList.toggle('hidden', !notes.length);
+        }
         function submitViolation() {
-            const studId = parseInt(document.getElementById('violStudentId').value);
-            const violation = document.getElementById('violDesc').value.trim();
-            const category = document.getElementById('violCategory').value;
-            const points = parseInt(document.getElementById('violPoints').value) || 5;
-            const action = document.getElementById('violAction').value.trim();
+            const g = i => (document.getElementById(i) || {}).value || '';
+            const studId = parseInt(g('violStudentId'));
+            const r = (mockState.rules || []).find(x => x.id === Number(g('violRule')));
+            const qty = r ? Math.max(1, parseInt(g('violQty')) || 1) : 1;
             const student = mockState.students.find(x => x.id === studId);
-            if(!violation || !student) { showToast('Peringatan', 'Deskripsi pelanggaran wajib diisi.'); return; }
-            run(async () => { const { error } = await sb.from('violations').insert({ student_id: studId, violation, category, points: -Math.abs(points), action: action || 'Pembinaan wali kelas' }); if (error) throw error; closeModal(); },
-                ['Berhasil Tercatat', `Pelanggaran ${student.name} berhasil disimpan & poin dikurangi.`], 'violations').then(ok => { if (ok) openViolationWaModal(studId, violation, category, Math.abs(points), action || 'Pembinaan wali kelas'); });
+            const violation = r ? r.name : g('violDesc').trim();
+            const category = r ? (r.article === 'Kritis' ? 'Berat' : r.article === 'Kehadiran' ? 'Ringan' : r.article) : g('violCategory');
+            const pts = r ? r.points * qty : Math.max(1, parseInt(g('violPoints')) || 1);
+            const status = g('violStatus') || 'TERBUKTI';
+            const action = g('violAction').trim() || 'Pembinaan wali kelas';
+            if (!violation || !student) { showToast('Peringatan', 'Bentuk pelanggaran wajib diisi.'); return; }
+            const row = { student_id: studId, violation, category, points: -pts, action };
+            if ((mockState.rules || []).length) Object.assign(row, { rule_id: r ? r.id : null, qty, pts, status, reporter: g('violReporter').trim() });
+            run(async () => { const { error } = await sb.from('violations').insert(row); if (error) throw error; closeModal(); },
+                ['Berhasil Tercatat', `Pelanggaran ${unesc(student.name)} disimpan (+${pts} poin${status === 'DUGAAN' ? ', berstatus dugaan sehingga belum dihitung' : ''}).`], 'violations')
+                .then(ok => { if (ok && status === 'TERBUKTI') openViolationWaModal(studId, violation + (r && qty > 1 ? ` (${qty} ${r.unit})` : ''), category, pts, action); });
+        }
+        function cancelViolation(id) {
+            const v = mockState.violations.find(x => x.id === id); if (!v) return;
+            if (!(mockState.rules || []).length) { run(async () => { const { error } = await sb.from('violations').delete().eq('id', id); if (error) throw error; }, ['Berhasil', 'Catatan pelanggaran dihapus.'], 'violations'); return; }
+            const reason = prompt('Alasan pembatalan catatan ini (wajib):');
+            if (reason === null) return;
+            if (!reason.trim()) { showToast('Peringatan', 'Alasan pembatalan wajib diisi.'); return; }
+            run(async () => { const { error } = await sb.from('violations').update({ status: 'BATAL', cancel_reason: reason.trim().slice(0, 120) }).eq('id', id); if (error) throw error; },
+                ['Dibatalkan', 'Catatan dibatalkan. Poin tidak lagi dihitung, riwayat tetap tersimpan.'], 'violations');
         }
 
         function openViolationWaModal(studId, violation, category, pts, action) {
@@ -3384,8 +3491,9 @@ Kami informasikan catatan kedisiplinan ananda *${unesc(st.name)}* (NISN: ${st.ni
 
 • Bentuk pelanggaran: ${violation}
 • Kategori: ${category}
-• Pengurangan poin: -${pts}
-• Sisa poin karakter: ${sisa} / 100
+• Poin pelanggaran ini: +${pts}
+• Total poin pelanggaran: ${100 - sisa} (${STAGES[computeDiscipline(st).stage][0]})
+• Sisa skor karakter: ${sisa} / 100
 • Tindakan pembinaan: ${action}
 
 Mohon kerja sama Bapak/Ibu dalam pembinaan ananda. Terima kasih.
