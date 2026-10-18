@@ -295,9 +295,9 @@
         // LOGO (opsional): unggah file gambar ke folder yang sama dengan index.html, lalu isi nama filenya di sini.
         // Contoh: const LOGO_SANTARA_URL = 'logo-santara.png';  const LOGO_SEKOLAH_URL = 'logo-sekolah.png';
         const LOGO_SANTARA_URL = 'logo-santara.png';
-        const LOGO_SEKOLAH_URL = '';
+        const LOGO_SEKOLAH_URL = 'login-bg.png';
         // Foto latar halaman login (opsional, tampil di sisi kiri komputer). Contoh: 'login-bg.jpg'
-        const LOGIN_BG_URL = 'login-bg.png';
+        const LOGIN_BG_URL = '';
         const LOGO_SANTARA_SRC = LOGO_SANTARA_URL || window.SANTARA_LOGO_EMBED || '';
         const SUPABASE_ANON_KEY = 'sb_publishable_9Ko7suUCCY44TuB9yuT0Cg_V9q6s7Jw';
         // anon key AMAN dipublikasikan; data dilindungi RLS di database.
@@ -338,6 +338,10 @@
             if (/BUKAN_PETUGAS/.test(m)) return 'Anda belum ditugaskan sebagai Petugas QR.';
             if (/PASSWORD_PENDEK/.test(m)) return 'Password minimal 6 karakter.';
             if (/ALASAN_KOSONG/.test(m)) return 'Alasan wajib diisi.';
+            if (/SKORSING/.test(m)) return 'Anda sedang dalam masa skorsing, absensi QR dinonaktifkan.';
+            if (/PEMUTIHAN_PENUH/.test(m)) return 'Anda masih memiliki 3 pengajuan pemutihan yang menunggu verifikasi.';
+            if (/KIND_INVALID/.test(m)) return 'Jenis pemutihan tidak valid.';
+            if (/discipline_actions|remissions|suspensions/.test(m)) return 'Fitur tahap/pemutihan belum aktif. Jalankan santara_supabase_v9_tindakan_pemutihan.sql di Supabase.';
             if (/HARI_LIBUR/.test(m)) return 'Tanggal tersebut hari libur, sehingga tidak dapat absen atau mengajukan izin.';
             if (/holidays/.test(m)) return 'Fitur hari libur belum aktif. Jalankan santara_supabase_v6_hari_libur.sql di Supabase.';
             if (/SUDAH_IZIN/.test(m)) return 'Anda sudah mengajukan izin/sakit hari ini, sehingga tidak dapat absen QR.';
@@ -393,7 +397,10 @@
                 fetchAllRows(() => sb.from('attendance').select('student_id,att_date,status,scan_time,created_at,updated_at').order('att_date', { ascending: false }).order('id', { ascending: false })),
                 q('violations'), q('counseling'), q('home_visits'), q('permissions'),
                 sb.from('holidays').select('*').order('h_date', { ascending: true }).then(r => r.error ? { data: [], error: null } : r),
-                sb.from('rules').select('*').order('sort', { ascending: true }).then(r => r.error ? { data: [], error: null } : r)
+                sb.from('rules').select('*').order('sort', { ascending: true }).then(r => r.error ? { data: [], error: null } : r),
+                sb.from('discipline_actions').select('*').then(r => r.error ? { data: [], error: null } : r),
+                sb.from('remissions').select('*').order('created_at', { ascending: false }).then(r => r.error ? { data: [], error: null } : r),
+                sb.from('suspensions').select('*').order('start_date', { ascending: false }).then(r => r.error ? { data: [], error: null } : r)
             ]);
             res.forEach(r => { if (r.error) throw r.error; });
             let prof = res[0].data;
@@ -411,6 +418,9 @@
             mockState.holidays = res[7].data.map(h => ({ id: h.id, date: h.h_date, name: h.name, type: h.type }));
             mockState._disc = {}; mockState._limit = 0;
             mockState.rules = res[8].data.map(r => ({ id: r.id, code: r.code, article: r.article, name: r.name, points: r.points, unit: r.unit, protected: !!r.protected, critical: !!r.critical, referral: !!r.referral, auto: !!r.auto, active: r.active !== false, sort: r.sort || 0 }));
+            mockState.dActions = res[9].data.map(x => ({ sid: x.student_id, code: x.code, year: x.school_year, date: x.done_date, note: esc(x.note || '') }));
+            mockState.remissions = res[10].data.map(x => ({ id: x.id, sid: x.student_id, kind: x.kind, points: x.points, status: x.status, ref: x.ref, note: esc(x.note || ''), year: x.school_year, createdAt: x.created_at }));
+            mockState.suspensions = res[11].data.map(x => ({ id: x.id, sid: x.student_id, start: x.start_date, end: x.end_date, note: esc(x.note || '') }));
             mockState.autoAlfaStart = prof.auto_alfa_start || '';
             const attSet = new Set(res[2].data.map(a => a.student_id + '|' + a.att_date));
             const derived = buildDerivedAlfa(res[1].data.filter(r => r.is_active).map(r => ({ id: r.id, created: jktDate(r.created_at) })), attSet,
@@ -1037,6 +1047,210 @@
                 (ev.length ? `<div class="divide-y divide-gray-50">${ev.slice(0, 8).map(activityItemHtml).join('')}</div><button onclick="openActivityAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua</button>` : emptyBox('fa-clock-rotate-left', 'Belum ada aktivitas tercatat.')));
         }
 
+        // ---------- Tahap B: tindakan wajib per tahap, pemutihan poin, skorsing ----------
+        const REMISSION_CAP = 30;
+        const REMISSION_KINDS = { UPACARA: ['Petugas upacara / kepanitiaan terjadwal', 3], KEBERSIHAN: ['Membantu kebersihan/penataan fasilitas (min. 3 kali)', 6], KEHADIRAN_100: ['Kehadiran 100% selama 1 bulan', 9], PRESTASI: ['Prestasi tingkat kabupaten atau lebih', 15] };
+        const REM_STATUS = { PENDING: ['Menunggu', 'bg-yellow-100 text-yellow-800'], APPROVED: ['Disetujui', 'bg-green-100 text-green-800'], REJECTED: ['Ditolak', 'bg-red-100 text-red-800'] };
+        const ACTIONS = [
+            ['TEGURAN', 1, 'Teguran lisan & pembinaan langsung'],
+            ['SURAT_PERNYATAAN', 1, 'Surat pernyataan janji perbaikan diri'],
+            ['SP1', 2, 'Terbitkan Surat Peringatan I (SP1)'],
+            ['PANGGIL1', 2, 'Panggilan & klarifikasi orang tua (ke-1)'],
+            ['SP2', 3, 'Terbitkan Surat Peringatan II (SP2)'],
+            ['PANGGIL2', 3, 'Panggilan orang tua (ke-2)'],
+            ['SKORSING', 3, 'Skorsing 3 hari efektif atau pembinaan intensif'],
+            ['PLENO', 4, 'Rapat pleno dewan guru & Kepala Sekolah (keputusan akhir)']
+        ];
+        function isSuspended(sid, iso) { return (mockState.suspensions || []).some(x => x.sid === sid && iso >= x.start && iso <= x.end); }
+        function acadYear() { return String(mockState.schoolConfig.academicYear || ''); }
+        function requiredActions(st) {
+            const stage = computeDiscipline(st).stage, ay = acadYear();
+            return ACTIONS.filter(a => a[1] <= stage).map(a => ({ code: a[0], stage: a[1], label: a[2], done: (mockState.dActions || []).find(x => x.sid === st.id && x.code === a[0] && x.year === ay) || null }));
+        }
+        function studentSuspensionBannerHtml() {
+            const t = todayISO(), sus = (mockState.suspensions || []).find(x => t >= x.start && t <= x.end);
+            if (!sus) return '';
+            return `<div class="rounded-3xl p-5 border-2 border-red-300 bg-red-50 flex items-center gap-4"><div class="w-12 h-12 shrink-0 rounded-2xl bg-red-600 text-white flex items-center justify-center text-xl"><i class="fa-solid fa-house-user"></i></div>
+                <div><h3 class="font-extrabold text-sm text-red-800 uppercase tracking-wide">Masa skorsing sampai ${fmtDate(sus.end)}</h3><p class="text-xs text-red-900 font-medium leading-relaxed">Belajar di rumah di bawah pengawasan orang tua. Absensi QR dinonaktifkan dan hari skorsing tidak dihitung Alfa.</p></div></div>`;
+        }
+
+        // ----- wali: tahap & tindakan wajib, pemutihan -----
+        function renderDisciplineBoxes() {
+            const box = document.getElementById('disciplineBox'); if (!box) return;
+            try {
+                const act = mockState.students.filter(x => x.accountStatus === 'Aktif');
+                const rows = act.map(st => ({ st, d: computeDiscipline(st), req: requiredActions(st) }));
+                const dist = [0, 1, 2, 3, 4].map(i => rows.filter(r => r.d.stage === i).length);
+                const list = rows.filter(r => r.d.stage >= 1).sort((a, b) => b.d.stage - a.d.stage || b.d.total - a.d.total);
+                const tiles = STAGES.map((g, i) => `<button onclick="openStageList(${i})" class="p-2.5 rounded-xl text-center ${g[1]} hover:opacity-80"><span class="block text-[10px] font-bold leading-tight">${g[0].split(' • ')[0]}</span><span class="text-lg font-black">${dist[i]}</span></button>`).join('');
+                const lrows = list.map(r => { const pend = r.req.filter(x => !x.done).length;
+                    return `<div class="flex items-center justify-between py-2.5 gap-3"><div class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${r.st.name}</span><span class="block text-[10px] text-gray-400">${r.d.total} poin • Alfa ${r.d.alfa}/${r.d.limit}</span></div>
+                        <div class="flex items-center gap-2 shrink-0"><span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold ${STAGES[r.d.stage][1]}">${STAGES[r.d.stage][0].split(' • ')[0]}</span>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${pend ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'}">${pend ? pend + ' tindakan' : 'Lengkap'}</span>
+                        <button onclick="openActionManager(${r.st.id})" class="px-3 py-1.5 bg-santara-navy text-white rounded-lg text-[11px] font-bold">Kelola</button></div></div>`; }).join('');
+                const pend = (mockState.remissions || []).filter(x => x.status === 'PENDING');
+                const sugg = remissionSuggestions();
+                const prow = pend.map(x => { const st = studentById(x.sid); if (!st) return '';
+                    return `<div class="py-2.5 space-y-1"><div class="flex items-center justify-between gap-2"><span class="font-bold text-xs text-santara-navy truncate">${st.name}</span><span class="text-[11px] font-black text-green-700 shrink-0">-${x.points} poin</span></div>
+                        <p class="text-[11px] text-gray-500">${REMISSION_KINDS[x.kind][0]}${x.note ? ' • ' + x.note : ''}</p>
+                        <div class="flex gap-2"><button onclick="decideRemission(${x.id}, true)" class="px-3 py-1.5 bg-green-600 text-white rounded-lg text-[11px] font-bold">Setujui</button><button onclick="decideRemission(${x.id}, false)" class="px-3 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-[11px] font-bold">Tolak</button></div></div>`; }).join('');
+                const srow = sugg.map(x => `<div class="flex items-center justify-between py-2 gap-2"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${x.st.name}</span><span class="block text-[10px] text-gray-400">Kehadiran 100% • ${x.label}</span></span><button onclick="approveSuggestion(${x.st.id}, '${x.ym}')" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-[11px] font-bold shrink-0">Setujui -9</button></div>`).join('');
+                box.innerHTML = `<div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    ${panelCard(panelHead('fa-scale-balanced', 'bg-orange-50 text-orange-600', 'Tahap Kedisiplinan & Tindakan Wajib', 'Tahap dihitung dari poin; tindakan dicatat wali kelas') + `<div class="grid grid-cols-5 gap-2">${tiles}</div>` +
+                        (list.length ? `<div class="divide-y divide-gray-100">${lrows}</div>` : emptyBox('fa-circle-check', 'Belum ada siswa di Tahap I atau lebih.')) +
+                        '<p class="text-[10px] text-gray-400">Tahap IV hanya menandai siap pleno. Keputusan akhir ada pada dewan guru dan Kepala Sekolah.</p>')}
+                    ${panelCard(panelHead('fa-eraser', 'bg-blue-50 text-blue-600', 'Pemutihan Poin', 'Syarat: poin di bawah 75 • maksimal 30 poin per tahun ajaran', `<button onclick="openAddRemission()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-santara-navy text-white">Tambah</button>`) +
+                        (pend.length ? `<div><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Menunggu validasi (${pend.length})</h4><div class="divide-y divide-gray-100">${prow}</div></div>` : '<p class="text-xs text-gray-400">Tidak ada pengajuan pemutihan yang menunggu.</p>') +
+                        (sugg.length ? `<div><h4 class="text-xs font-extrabold text-santara-textSec uppercase tracking-wider">Disarankan sistem (${sugg.length})</h4><div class="divide-y divide-gray-100">${srow}</div></div>` : '') +
+                        '<p class="text-[10px] text-gray-400">Poin pelanggaran kritis tidak dapat diputihkan. Siswa mengajukan dari dashboard-nya, wali memvalidasi.</p>')}
+                </div>`;
+            } catch (e) { console.error(e); box.innerHTML = panelCard('<p class="text-xs text-red-600 text-center py-6">Panel tahap kedisiplinan gagal dimuat.</p>'); }
+        }
+        function openStageList(i) {
+            const items = mockState.students.filter(x => x.accountStatus === 'Aktif' && computeDiscipline(x).stage === i).map(x => `<button onclick="${i >= 1 ? `openActionManager(${x.id})` : `openStudentFromModal(${x.id})`}" class="w-full flex items-center justify-between py-2.5 text-left"><span class="font-bold text-santara-navy">${x.name}</span><span class="text-[11px] text-gray-500 font-semibold">${computeDiscipline(x).total} poin</span></button>`).join('');
+            openListModal(STAGES[i][0], null, items);
+        }
+        function openActionManager(id) {
+            const st = studentById(id); if (!st) return;
+            const d = computeDiscipline(st), req = requiredActions(st);
+            const items = req.map(a => `<div class="flex items-start justify-between gap-3 py-3"><div class="min-w-0"><span class="block font-bold text-xs text-santara-navy">${a.label}</span>
+                <span class="block text-[10px] ${a.done ? 'text-green-700' : 'text-amber-700'} font-semibold">${a.done ? 'Selesai ' + fmtDate(a.done.date) + (a.done.note ? ' • ' + a.done.note : '') : 'Wajib • Tahap ' + a.stage}</span></div>
+                ${a.done ? `<button onclick="undoAction(${id}, '${a.code}')" class="px-2.5 py-1.5 bg-white border border-santara-border rounded-lg text-[10px] font-bold text-gray-500 shrink-0">Batalkan</button>`
+                         : `<button onclick="openActionDone(${id}, '${a.code}')" class="px-3 py-1.5 bg-santara-teal text-white rounded-lg text-[11px] font-bold shrink-0">Tandai Selesai</button>`}</div>`).join('');
+            const sus = (mockState.suspensions || []).filter(x => x.sid === id).map(x => `<p class="text-[11px] text-gray-500">Skorsing ${fmtDate(x.start)} s/d ${fmtDate(x.end)}${x.note ? ' • ' + x.note : ''}</p>`).join('');
+            openListModal(`Tindakan • ${st.name}`, `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold ${STAGES[d.stage][1]}">${STAGES[d.stage][0]}</span> ${d.total} poin • Alfa ${d.alfa}/${d.limit} hari${d.remission ? ' • pemutihan -' + d.remission : ''}`,
+                items || '<p class="text-gray-400 py-6 text-center">Belum ada tindakan wajib (siswa masih Aman).</p>');
+            if (sus) document.querySelector('#modalContentBox .divide-y').insertAdjacentHTML('afterend', `<div class="space-y-1 pt-2">${sus}</div>`);
+        }
+        function openActionDone(id, code) {
+            const st = studentById(id); if (!st) return;
+            const a = ACTIONS.find(x => x[0] === code);
+            const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
+            const t = todayISO();
+            const isCall = code.startsWith('PANGGIL'), isSus = code === 'SKORSING';
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">${a[2]}</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    <p class="font-bold text-santara-navy">${st.name}</p>
+                    ${isSus ? `<div><label class="block font-bold mb-1">PILIHAN</label><select id="actMode" onchange="document.getElementById('actSusBox').classList.toggle('hidden', this.value !== 'skorsing')" class="w-full p-3 border rounded-xl"><option value="skorsing">Skorsing (dirumahkan)</option><option value="intensif">Pembinaan intensif (tanpa skorsing)</option></select></div>
+                    <div id="actSusBox" class="grid grid-cols-2 gap-3"><div><label class="block font-bold mb-1">MULAI</label><input type="date" id="actFrom" value="${t}" class="w-full p-3 border rounded-xl"></div><div><label class="block font-bold mb-1">SAMPAI</label><input type="date" id="actTo" value="${dateAddDays(t, 4)}" class="w-full p-3 border rounded-xl"></div></div>` : ''}
+                    <div><label class="block font-bold mb-1">TANGGAL PELAKSANAAN</label><input type="date" id="actDate" value="${t}" class="w-full p-3 border rounded-xl"></div>
+                    <div><label class="block font-bold mb-1">CATATAN</label><input type="text" id="actNote" maxlength="120" placeholder="mis. nomor surat, hasil pertemuan" class="w-full p-3 border rounded-xl"></div>
+                    ${isCall ? `<button onclick="sendCallWa(${id})" class="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl"><i class="fa-brands fa-whatsapp mr-1"></i>Kirim Panggilan via WhatsApp</button>` : ''}
+                    <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pt-3 bg-white/95 backdrop-blur border-t border-gray-100 z-10" style="padding-bottom: calc(1rem + env(safe-area-inset-bottom));">
+                        <button onclick="saveActionDone(${id}, '${code}')" class="w-full py-3.5 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan & Tandai Selesai</button></div>
+                </div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function sendCallWa(id) {
+            const st = studentById(id); if (!st) return;
+            const when = prompt('Hari/tanggal & jam pertemuan (mis. Senin, 26 Okt 2026 pukul 09.00):'); if (!when) return;
+            const d = computeDiscipline(st), sc = mockState.schoolConfig;
+            const msg = `Assalamualaikum Wr. Wb. Bapak/Ibu ${unesc(st.parent)},\n\nKami mengundang Bapak/Ibu hadir ke sekolah untuk membahas pembinaan ananda *${unesc(st.name)}* (NISN: ${st.nis}, kelas ${sc.className}), dengan catatan kedisiplinan saat ini ${d.total} poin (${STAGES[d.stage][0]}).\n\nWaktu: ${when}\nTempat: ${unesc(sc.schoolName)}\n\nMohon kehadirannya. Terima kasih.\n_Wali Kelas ${unesc(sc.teacherName)}_`;
+            openWaModal('Panggilan Orang Tua', msg, `https://wa.me/${waNum(st.parentPhone)}?text=${encodeURIComponent(msg)}`, waNum(st.parentPhone) ? '' : '<div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold">Nomor WhatsApp orang tua belum diisi.</div>');
+        }
+        function saveActionDone(id, code) {
+            if (needSb()) return;
+            const g = i => (document.getElementById(i) || {}).value || '';
+            const st = studentById(id); if (!st) return;
+            const mode = g('actMode'), note = g('actNote').trim() || (mode === 'intensif' ? 'Pembinaan intensif' : '');
+            const sus = code === 'SKORSING' && mode === 'skorsing' ? { from: g('actFrom'), to: g('actTo') } : null;
+            if (sus && (!sus.from || !sus.to || sus.to < sus.from)) { showToast('Peringatan', 'Rentang skorsing tidak valid.'); return; }
+            run(async () => {
+                const r1 = await sb.from('discipline_actions').upsert([{ student_id: id, code, school_year: acadYear(), done_date: g('actDate') || todayISO(), note: (sus ? `Skorsing ${fmtDate(sus.from)} s/d ${fmtDate(sus.to)}. ` : '') + note }], { onConflict: 'student_id,code,school_year' });
+                if (r1.error) throw r1.error;
+                if (sus) { const r2 = await sb.from('suspensions').insert({ student_id: id, start_date: sus.from, end_date: sus.to, note }); if (r2.error) throw r2.error; }
+            }, ['Tersimpan', 'Tindakan dicatat selesai.'], null).then(ok => { if (ok) { renderDisciplineBoxes(); openActionManager(id); } });
+        }
+        function undoAction(id, code) {
+            if (needSb() || !confirm('Batalkan status selesai tindakan ini?')) return;
+            run(async () => { const { error } = await sb.from('discipline_actions').delete().eq('student_id', id).eq('code', code).eq('school_year', acadYear()); if (error) throw error; }, ['Dibatalkan', 'Status tindakan dikembalikan.'], null)
+                .then(ok => { if (ok) { renderDisciplineBoxes(); openActionManager(id); } });
+        }
+
+        // ----- pemutihan -----
+        function remissionSuggestions() {
+            const out = [], t = todayISO(), { from } = yearBounds();
+            const okSet = new Set((mockState.attendanceRows || []).filter(a => a.status === 'HADIR' && !a.derived).map(a => a.sid + '|' + a.date));
+            const months = []; for (let m = from.slice(0, 7); m < t.slice(0, 7); m = new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 1)).toISOString().slice(0, 7)) months.push(m);
+            mockState.students.filter(x => x.accountStatus === 'Aktif' && computeDiscipline(x).eligible).forEach(st => {
+                months.forEach(ym => {
+                    if ((mockState.remissions || []).some(x => x.sid === st.id && x.kind === 'KEHADIRAN_100' && x.ref === ym && x.status !== 'REJECTED')) return;
+                    const last = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).getUTCDate();
+                    let n = 0, all = true;
+                    for (let day = 1; day <= last && all; day++) { const d = `${ym}-${String(day).padStart(2, '0')}`; if (!isSchoolDay(d)) continue; n++; if (!okSet.has(st.id + '|' + d)) all = false; }
+                    if (all && n >= 10) out.push({ st, ym, label: new Date(ym + '-01T00:00:00Z').toLocaleDateString('id-ID', { timeZone: 'UTC', month: 'long', year: 'numeric' }) });
+                });
+            });
+            return out.slice(0, 15);
+        }
+        function remitCheck(st, pts) {
+            const d = computeDiscipline(st);
+            if (d.total >= 75) return { err: 'Siswa belum memenuhi syarat: poin pelanggaran masih 75 atau lebih.' };
+            if (d.whitePts <= d.remission) return { err: 'Tidak ada poin yang dapat diputihkan (poin kritis tidak dapat diputihkan).' };
+            const p = Math.min(pts, REMISSION_CAP - d.remission);
+            if (p <= 0) return { err: 'Batas pemutihan 30 poin per tahun ajaran sudah tercapai.' };
+            return { pts: p };
+        }
+        function insertRemission(st, kind, pts, note, ref) {
+            if (needSb()) return;
+            const c = remitCheck(st, pts); if (c.err) { showToast('Tidak Dapat Diproses', c.err); return; }
+            run(async () => { const { error } = await sb.from('remissions').insert({ student_id: st.id, kind, points: c.pts, status: 'APPROVED', ref: ref || null, note: note || '', school_year: acadYear(), decided_at: new Date().toISOString() }); if (error) throw error; closeModal(); },
+                ['Pemutihan Disetujui', `-${c.pts} poin untuk ${unesc(st.name)}.`], 'dashboard');
+        }
+        function approveSuggestion(id, ym) { const st = studentById(id); if (st) insertRemission(st, 'KEHADIRAN_100', 9, 'Kehadiran 100% ' + ym, ym); }
+        function decideRemission(id, yes) {
+            const rm = (mockState.remissions || []).find(x => x.id === id); if (!rm || needSb()) return;
+            const st = studentById(rm.sid); if (!st) return;
+            let pts = rm.points;
+            if (yes) { const c = remitCheck(st, pts); if (c.err) { showToast('Tidak Dapat Disetujui', c.err); return; } pts = c.pts; }
+            run(async () => { const { error } = await sb.from('remissions').update({ status: yes ? 'APPROVED' : 'REJECTED', points: pts, decided_at: new Date().toISOString() }).eq('id', id); if (error) throw error; },
+                [yes ? 'Disetujui' : 'Ditolak', yes ? `-${pts} poin untuk ${unesc(st.name)}.` : 'Pengajuan pemutihan ditolak.'], 'dashboard');
+        }
+        function openAddRemission() {
+            const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Tambah Pemutihan Poin</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    <div><label class="block font-bold mb-1">SISWA</label><select id="remStud" class="w-full p-3 border rounded-xl">${mockState.students.filter(x => x.accountStatus === 'Aktif').map(x => `<option value="${x.id}">${x.name} (${computeDiscipline(x).total} poin)</option>`).join('')}</select></div>
+                    <div><label class="block font-bold mb-1">JENIS</label><select id="remKind" class="w-full p-3 border rounded-xl">${Object.keys(REMISSION_KINDS).map(k => `<option value="${k}">${REMISSION_KINDS[k][0]} (-${REMISSION_KINDS[k][1]})</option>`).join('')}</select></div>
+                    <div><label class="block font-bold mb-1">KETERANGAN / BUKTI</label><input type="text" id="remNoteW" maxlength="120" class="w-full p-3 border rounded-xl" placeholder="mis. Petugas upacara 17 Agustus"></div>
+                    <button onclick="saveAddRemission()" class="w-full py-3 bg-santara-teal text-white font-bold rounded-xl shadow-md">Setujui & Simpan</button>
+                </div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function saveAddRemission() {
+            const g = i => (document.getElementById(i) || {}).value || '';
+            const st = studentById(parseInt(g('remStud'))), kind = g('remKind');
+            if (!st || !REMISSION_KINDS[kind]) return;
+            if (!g('remNoteW').trim()) { showToast('Peringatan', 'Keterangan/bukti wajib diisi.'); return; }
+            insertRemission(st, kind, REMISSION_KINDS[kind][1], g('remNoteW').trim(), null);
+        }
+        // ----- siswa mengajukan pemutihan -----
+        function studentRemissionCardHtml(user) {
+            const d = computeDiscipline(user), mine = (mockState.remissions || []).filter(x => x.sid === user.id);
+            const list = mine.slice(0, 5).map(x => `<div class="flex items-center justify-between text-xs py-1.5"><span class="text-gray-700 font-semibold truncate pr-2">${REMISSION_KINDS[x.kind][0]}</span><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${REM_STATUS[x.status][1]} shrink-0">${REM_STATUS[x.status][0]} • -${x.points}</span></div>`).join('');
+            const form = d.eligible ? `<div class="space-y-2.5">
+                    <select id="stRemKind" class="w-full p-3 border border-santara-border rounded-xl text-xs font-semibold bg-gray-50">${Object.keys(REMISSION_KINDS).map(k => `<option value="${k}">${REMISSION_KINDS[k][0]} (-${REMISSION_KINDS[k][1]})</option>`).join('')}</select>
+                    <textarea id="stRemNote" rows="2" maxlength="150" placeholder="Jelaskan kegiatan/prestasi dan tanggalnya" class="w-full p-3 border border-santara-border rounded-xl text-xs bg-gray-50"></textarea>
+                    <button onclick="submitRemissionRequest()" class="w-full py-3 bg-santara-teal text-white font-bold rounded-xl text-xs shadow-md">Ajukan Pemutihan</button></div>`
+                : `<p class="text-xs text-gray-500 leading-relaxed">${d.whitePts <= d.remission ? 'Saat ini tidak ada poin yang dapat diputihkan.' : d.total >= 75 ? 'Pemutihan hanya untuk poin di bawah 75.' : 'Batas pemutihan 30 poin sudah tercapai.'}</p>`;
+            if (!d.whitePts && !mine.length) return '';
+            return `<div class="bg-white rounded-3xl p-6 border border-santara-border shadow-sm space-y-4">
+                <div class="flex items-center space-x-2.5 border-b pb-3.5"><i class="fa-solid fa-eraser text-santara-teal text-lg"></i><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Program Pemutihan Poin</h3></div>
+                ${form}${list ? `<div class="divide-y divide-gray-100">${list}</div>` : ''}
+                <p class="text-[10px] text-gray-400">Pengajuan divalidasi Wali Kelas. Poin pelanggaran kritis tidak dapat diputihkan.</p></div>`;
+        }
+        function submitRemissionRequest() {
+            if (needSb()) return;
+            const kind = (document.getElementById('stRemKind') || {}).value, note = ((document.getElementById('stRemNote') || {}).value || '').trim();
+            if (note.length < 5) { showToast('Peringatan', 'Jelaskan kegiatan/prestasi Anda (minimal 5 karakter).'); return; }
+            run(async () => { const { error } = await sb.rpc('student_request_remission', { p_token: studentToken, p_kind: kind, p_note: note }); if (error) throw error; },
+                ['Terkirim', 'Pengajuan pemutihan menunggu validasi Wali Kelas.'], 'dashboard');
+        }
+
         // ---------- Mesin poin kedisiplinan, tahap I–IV, katalog bobot ----------
         const STAGES = [['Aman', 'bg-green-100 text-green-800'], ['Tahap I • Waspada', 'bg-yellow-100 text-yellow-800'], ['Tahap II • SP1', 'bg-orange-100 text-orange-800'], ['Tahap III • SP2', 'bg-red-100 text-red-800'], ['Tahap IV • Kritis / Siap Pleno', 'bg-red-700 text-white']];
         function ruleById(id) { return (mockState.rules || []).find(r => r.id === id) || null; }
@@ -1052,17 +1266,22 @@
             const cache = mockState._disc || (mockState._disc = {});
             if (cache[st.id] && st.id != null) return cache[st.id];
             const { from, to } = yearBounds();
-            const rows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.date >= from && a.date <= to && isSchoolDay(a.date));
+            const rows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.date >= from && a.date <= to && isSchoolDay(a.date) && !isSuspended(st.id, a.date));
             const late = rows.filter(a => a.status === 'TERLAMBAT').length;
             const alfa = rows.filter(a => a.status === 'ALFA').length;
             const vs = mockState.violations.filter(v => v.nis === st.nis && (v.status || 'TERBUKTI') === 'TERBUKTI' && (v.rawDate || '') >= from && (v.rawDate || '') <= to);
             const violPts = vs.reduce((n, v) => n + (v.pts || 0), 0);
             const critical = vs.some(v => (ruleById(v.ruleId) || {}).critical);
-            const total = late * ruleW('TERLAMBAT', 1) + alfa * ruleW('ALFA', 2) + violPts;
+            const rawTotal = late * ruleW('TERLAMBAT', 1) + alfa * ruleW('ALFA', 2) + violPts;
+            const protectedPts = vs.reduce((n, v) => n + (((ruleById(v.ruleId) || {}).protected) ? (v.pts || 0) : 0), 0);
+            const whitePts = rawTotal - protectedPts;
+            const ay = String(mockState.schoolConfig.academicYear || '');
+            const remission = Math.min(REMISSION_CAP, (mockState.remissions || []).filter(x => x.sid === st.id && x.status === 'APPROVED' && x.year === ay).reduce((n, x) => n + x.points, 0));
+            const total = protectedPts + Math.max(0, whitePts - remission);   // pemutihan tidak menyentuh poin pelanggaran kritis
             const limit = alfaLimitDays();
             let stage = total >= 100 ? 4 : total >= 75 ? 3 : total >= 50 ? 2 : total >= 25 ? 1 : 0;
             if (critical || alfa >= limit) stage = 4;
-            const out = { late, alfa, violPts, total, stage, limit, alfaPct: Math.round(alfa * 100 / limit), critical, karakter: Math.max(0, 100 - total) };
+            const out = { late, alfa, violPts, rawTotal, protectedPts, whitePts, remission, eligible: total < 75 && whitePts > remission && remission < REMISSION_CAP, total, stage, limit, alfaPct: Math.round(alfa * 100 / limit), critical, karakter: Math.max(0, 100 - total) };
             if (st.id != null) cache[st.id] = out;
             return out;
         }
@@ -1116,7 +1335,7 @@
             const out = [];
             studs.forEach(st => {
                 for (let d = start > st.created ? start : st.created; d <= cutoff; d = dateAddDays(d, 1)) {
-                    if (!isSchoolDay(d)) continue;
+                    if (!isSchoolDay(d) || isSuspended(st.id, d)) continue;
                     const k = st.id + '|' + d;
                     if (attSet.has(k) || excused.has(k)) continue;
                     out.push({ sid: st.id, date: d, createdAt: dateAddDays(d, 2) + 'T00:00:00+07:00' });
@@ -1372,6 +1591,9 @@
             mockState.holidays = (me.holidays || []).map(h => ({ date: h.h_date, name: h.name, type: h.type }));
             mockState._disc = {}; mockState._limit = 0;
             mockState.rules = (me.rules || []).map(r => ({ id: r.id, code: r.code, article: r.article, name: r.name, points: r.points, unit: r.unit, protected: !!r.protected, critical: !!r.critical, referral: !!r.referral, auto: !!r.auto, active: r.active !== false, sort: r.sort || 0 }));
+            mockState.dActions = [];
+            mockState.remissions = (me.remissions || []).map(x => ({ id: x.id, sid: r.id, kind: x.kind, points: x.points, status: x.status, ref: x.ref, note: esc(x.note || ''), year: x.school_year, createdAt: x.created_at }));
+            mockState.suspensions = (me.suspensions || []).map(x => ({ id: x.id, sid: r.id, start: x.start_date, end: x.end_date, note: esc(x.note || '') }));
             mockState.autoAlfaStart = p.auto_alfa_start || '';
             const aset = new Set(me.attendance.map(a => r.id + '|' + a.att_date));
             me.attendance = me.attendance.concat(buildDerivedAlfa([{ id: r.id, created: jktDate(r.created_at) }], aset, me.permissions.map(x => ({ sid: r.id, date: x.perm_date, status: x.status })))
@@ -1807,11 +2029,13 @@
                         </div>
                     </div>
                     <div id="alertCenterBox"></div>
+                    <div id="disciplineBox"></div>
                     <div id="analyticsBox"></div>
                 </div>
             `;
             renderHolidayBanner();
             renderAlertCenter();
+            renderDisciplineBoxes();
             renderAnalytics();
         }
 
@@ -1906,6 +2130,7 @@ async function sendAlfaLateRecap() {
                     </div>
 
                     ${studentHolidayBannerHtml()}
+                    ${studentSuspensionBannerHtml()}
                     ${studentAlertBannerHtml(user)}
                     ${teladanBadgeHtml(user)}
 
@@ -1935,6 +2160,7 @@ async function sendAlfaLateRecap() {
                     </div>
 
                     ${studentDisciplineCardHtml(user)}
+                    ${studentRemissionCardHtml(user)}
 
                     <div class="bg-white rounded-3xl p-6 border border-red-200 shadow-sm space-y-4">
                         <div class="flex items-center justify-between border-b pb-3.5">
@@ -2738,6 +2964,7 @@ async function sendAlfaLateRecap() {
         async function recordScan(text) {
             const code = String(text).trim();
             if (!code || !studentToken || needSb()) return;
+            if (isSuspended(mockState.currentUser.id, todayISO())) { showToast('Skorsing', 'Anda sedang dalam masa skorsing, absensi QR dinonaktifkan.'); stopCameraAndBack(); return; }
             if (!isSchoolDay(todayISO())) { showToast('Hari Libur', `Hari ini libur (${unesc(dayOffReason(todayISO()))}). Absensi QR ditiadakan.`); stopCameraAndBack(); return; }
             if (mockState.permissions.some(p => p.rawDate === todayISO() && p.status !== 'REJECTED')) { showToast('Tidak Dapat Absen', 'Anda sudah mengajukan izin/sakit hari ini, sehingga tidak dapat absen QR.'); stopCameraAndBack(); return; }
             const me0 = mockState.students[0];
