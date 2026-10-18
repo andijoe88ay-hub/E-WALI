@@ -407,7 +407,13 @@
             mockState.qrSettings.toleranceTime = prof.qr_tolerance;
             mockState.conditionLabels = prof.condition_labels || {};
 
-            mockState.attendanceRows = res[2].data.map(a => ({ sid: a.student_id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at, updatedAt: a.updated_at }));
+            mockState.holidays = res[7].data.map(h => ({ id: h.id, date: h.h_date, name: h.name, type: h.type }));
+            mockState.autoAlfaStart = prof.auto_alfa_start || '';
+            const attSet = new Set(res[2].data.map(a => a.student_id + '|' + a.att_date));
+            const derived = buildDerivedAlfa(res[1].data.filter(r => r.is_active).map(r => ({ id: r.id, created: jktDate(r.created_at) })), attSet,
+                res[6].data.map(p => ({ sid: p.student_id, date: p.perm_date, status: p.status })));
+            res[2].data = res[2].data.concat(derived.map(d => ({ student_id: d.sid, att_date: d.date, status: 'ALFA', scan_time: '-', created_at: d.createdAt, updated_at: d.createdAt, derived: true })));
+            mockState.attendanceRows = res[2].data.map(a => ({ sid: a.student_id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at, updatedAt: a.updated_at, derived: !!a.derived }));
             mockState.holidays = res[7].data.map(h => ({ id: h.id, date: h.h_date, name: h.name, type: h.type }));
             const today = todayISO();
             const sum = {}, todayRow = {};
@@ -487,7 +493,7 @@
                 newAlfa = alfaRows.filter(a => Date.parse(a.createdAt) > t).length;
                 if (!newViol && !newAlfa) return null;   // sudah ditindaklanjuti & belum ada kejadian baru
             }
-            return { st, reasons, pts, alfa: alfaRows.length, level: ivs.length, last, newViol, newAlfa };
+            return { st, reasons, pts, alfa: alfaRows.length, limit: alfaLimitDays(), level: ivs.length, last, newViol, newAlfa };
         }
         function computeAllAlerts() {
             return mockState.students.filter(x => x.accountStatus === 'Aktif').map(computeAlert).filter(Boolean)
@@ -516,10 +522,13 @@
                             <p class="text-[11px] text-gray-500 font-mono">NISN ${st.nis}</p>
                             <div class="flex flex-wrap gap-1.5 mt-2">
                                 ${a.reasons.map(r => `<span class="px-2 py-0.5 bg-white border border-gray-200 rounded-lg text-[10px] font-bold text-gray-700">${r}</span>`).join('')}
+                                ${a.alfa ? `<span class="px-2 py-0.5 rounded-lg text-[10px] font-bold ${a.alfa >= a.limit ? 'bg-red-100 text-red-700' : 'bg-blue-50 text-blue-700'}">Batas Alfa 20%: ${a.alfa}/${a.limit} hari</span>` : ''}
                             </div>
+                            <p class="text-[11px] text-blue-700 font-semibold mt-1.5">${preventionHint(a.level)}</p>
                             ${a.last ? `<p class="text-[11px] text-gray-500 mt-1.5">Tindak lanjut terakhir ${a.last.date}. Sejak itu: <b>+${a.newViol}</b> pelanggaran, <b>+${a.newAlfa}</b> alfa.</p>` : ''}
                         </div>
                         <div class="flex gap-2 md:flex-col lg:flex-row shrink-0">
+                            <button onclick="openAlfaDates(${st.id})" class="flex-1 px-3.5 py-2.5 bg-white border border-santara-border hover:bg-gray-50 text-santara-navy rounded-xl text-[11px] font-bold shadow-sm flex items-center justify-center space-x-1.5"><i class="fa-solid fa-calendar-xmark text-sm"></i><span>Tanggal Alfa</span></button>
                             <button onclick="sendAlertWa(${st.id})" class="flex-1 px-3.5 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-[11px] font-bold shadow-sm flex items-center justify-center space-x-1.5"><i class="fa-brands fa-whatsapp text-sm"></i><span>WhatsApp Ortu</span></button>
                             <button onclick="openInterventionModal(${st.id})" class="flex-1 px-3.5 py-2.5 bg-santara-navy hover:bg-blue-900 text-white rounded-xl text-[11px] font-bold shadow-sm flex items-center justify-center space-x-1.5"><i class="fa-solid fa-clipboard-check text-sm"></i><span>Tindak Lanjut</span></button>
                         </div>
@@ -537,6 +546,7 @@
                         </div>
                         <span class="px-3 py-1 rounded-full text-xs font-bold ${alerts.length ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}">${alerts.length} Alert Aktif</span>
                     </div>
+                    ${autoAlfaNoticeHtml()}
                     ${alerts.length ? `<div class="space-y-3">${items}</div>` : `<div class="text-center py-8 text-xs text-gray-500"><i class="fa-solid fa-circle-check text-green-500 text-3xl mb-2 block"></i>Tidak ada alert aktif. Semua siswa dalam kondisi baik.</div>`}
                 </div>`;
         }
@@ -569,8 +579,14 @@
                 </div>
                 <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
                     <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold">
-                        Pemicu: ${a ? a.reasons.join(' • ') : '-'}. Tindak lanjut sebelumnya: ${prev} kali. Setelah disimpan, alert siswa ini otomatis hilang dari daftar aktif.
+                        Pemicu: ${a ? a.reasons.join(' • ') : '-'}. Tindak lanjut sebelumnya: ${prev} kali. Setelah disimpan, alert siswa ini otomatis hilang dari daftar aktif.<br><span class="text-blue-800">${preventionHint(a ? a.level : 0)}</span>
                     </div>
+                    ${a && a.alfa >= 3 ? `<div>
+                        <label class="block font-bold mb-1">PENYEBAB KETIDAKHADIRAN</label>
+                        <select id="ivCause" class="w-full p-3 border rounded-xl">
+                            <option value="">Belum diketahui</option><option>Sakit tanpa keterangan</option><option>Kendala transportasi</option><option>Kendala ekonomi</option><option>Masalah keluarga</option><option>Pengaruh pergaulan/lingkungan</option><option>Kurang motivasi belajar</option><option>Lainnya</option>
+                        </select>
+                    </div>` : ''}
                     <div>
                         <label class="block font-bold mb-1">BENTUK TINDAK LANJUT</label>
                         <select id="ivType" class="w-full p-3 border rounded-xl">
@@ -609,7 +625,7 @@
             const g = i => (document.getElementById(i) || {}).value || '';
             const uraian = g('ivDesc').trim();
             if (!uraian) { showToast('Peringatan', 'Uraian masalah wajib diisi.'); return; }
-            const row = { student_id: id, category: 'Tindak Lanjut Early Warning', description: `[${g('ivType')}] ${uraian}`,
+            const row = { student_id: id, category: 'Tindak Lanjut Early Warning', description: `[${g('ivType')}] ${g('ivCause') ? 'Penyebab: ' + g('ivCause') + '. ' : ''}${uraian}`,
                 action: g('ivAction').trim() || 'Pembinaan wali kelas', result: g('ivResult').trim() || 'Siswa kooperatif', status: 'SELESAI' };
             const cond = g('ivCond');
             run(async () => {
@@ -730,7 +746,7 @@
         function openAttendanceDetail(title, recs) {
             const sorted = recs.slice().sort((a, b) => b.date.localeCompare(a.date) || String(a.st.name).localeCompare(String(b.st.name)));
             const items = sorted.map(r => `<div class="flex items-center justify-between py-2.5 gap-3">
-                <button onclick="openStudentFromModal(${r.st.id})" class="text-left min-w-0"><span class="block font-bold text-santara-navy truncate">${r.st.name}</span><span class="block text-[10px] text-gray-400">${fmtDate(r.date)}${r.time && r.time !== '-' ? ' • ' + r.time : ''}</span></button>
+                <button onclick="openStudentFromModal(${r.st.id})" class="text-left min-w-0"><span class="block font-bold text-santara-navy truncate">${r.st.name}</span><span class="block text-[10px] text-gray-400">${fmtDate(r.date)}${r.time && r.time !== '-' ? ' • ' + r.time : ''}${r.derived ? ' • otomatis' : ''}</span></button>
                 <span class="px-2.5 py-1 rounded-full text-[10px] font-extrabold text-white shrink-0" style="background:${STATUS_META[r.status].color}">${STATUS_META[r.status].label}</span></div>`).join('');
             openListModal(title, `${sorted.length} catatan kehadiran`, items);
         }
@@ -1016,6 +1032,98 @@
                 (ev.length ? `<div class="divide-y divide-gray-50">${ev.slice(0, 8).map(activityItemHtml).join('')}</div><button onclick="openActivityAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua</button>` : emptyBox('fa-clock-rotate-left', 'Belum ada aktivitas tercatat.')));
         }
 
+        // ---------- Alfa otomatis, pencegahan dini kehadiran, koreksi absensi ----------
+        function jktDate(ts) { return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }); }
+        // Hari sekolah tanpa catatan absensi dan tanpa izin (belum ditolak) = Alfa setelah 2x24 jam, mulai tanggal yang ditetapkan wali.
+        function buildDerivedAlfa(studs, attSet, perms) {
+            const start = mockState.autoAlfaStart;
+            if (!start) return [];
+            const cutoff = dateAddDays(todayISO(), -2);
+            if (cutoff < start) return [];
+            const excused = new Set(perms.filter(p => p.status !== 'REJECTED').map(p => p.sid + '|' + p.date));
+            const out = [];
+            studs.forEach(st => {
+                for (let d = start > st.created ? start : st.created; d <= cutoff; d = dateAddDays(d, 1)) {
+                    if (!isSchoolDay(d)) continue;
+                    const k = st.id + '|' + d;
+                    if (attSet.has(k) || excused.has(k)) continue;
+                    out.push({ sid: st.id, date: d, createdAt: dateAddDays(d, 2) + 'T00:00:00+07:00' });
+                }
+            });
+            return out;
+        }
+        // Batas Alfa = 20% dari hari efektif tahun ajaran (Juli–Juni, dihitung dari kalender dan hari libur).
+        function alfaLimitDays() {
+            const ay = String(mockState.schoolConfig.academicYear || '').split('/').map(Number);
+            const y1 = ay[0] || new Date().getFullYear(), y2 = ay[1] || y1 + 1;
+            return Math.max(1, Math.ceil(countSchoolDays(`${y1}-07-01`, `${y2}-06-30`) * 0.2));
+        }
+        function preventionHint(level) {
+            if (level === 0) return 'Pencegahan dini: hubungi orang tua hari ini, gali penyebab, dan sepakati rencana perbaikan.';
+            if (level === 1) return 'Eskalasi: undang orang tua ke sekolah atau lakukan home visit.';
+            return 'Kritis: buat surat pernyataan tertulis dan libatkan Kepala Sekolah/BK.';
+        }
+        function autoAlfaNoticeHtml() {
+            const st = mockState.autoAlfaStart;
+            return st
+                ? `<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-900 font-semibold"><span><i class="fa-solid fa-robot mr-1.5"></i>Alfa otomatis aktif sejak ${fmtDate(st)}. Hari sekolah tanpa absen atau izin menjadi Alfa setelah 2x24 jam.</span><button onclick="openAutoAlfaSettings()" class="px-3 py-1.5 bg-white border border-blue-200 rounded-lg font-bold">Atur</button></div>`
+                : `<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 font-semibold"><span><i class="fa-solid fa-robot mr-1.5"></i>Alfa otomatis belum aktif, jadi alert Alfa 3x hanya terisi jika Alfa ditandai manual.</span><button onclick="openAutoAlfaSettings()" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold">Aktifkan</button></div>`;
+        }
+        function openAutoAlfaSettings() {
+            const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Alfa Otomatis</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    <div class="p-3 bg-sky-50 border border-sky-200 rounded-xl text-sky-900 font-semibold leading-relaxed">Hari sekolah tanpa scan, tanpa catatan absensi, dan tanpa pengajuan izin/sakit (yang belum ditolak) otomatis dihitung Alfa setelah 2x24 jam. Hari libur tidak dihitung. Jika siswa sebenarnya hadir, gunakan tombol Koreksi pada Tanggal Alfa. Hanya tanggal sejak mulai pemantauan yang dihitung, agar hari sebelum kelas memakai scan tidak menjadi Alfa.</div>
+                    <div><label class="block font-bold mb-1">MULAI PEMANTAUAN ALFA OTOMATIS</label>
+                        <input type="date" id="aaStart" value="${mockState.autoAlfaStart || todayISO()}" class="w-full p-3 border rounded-xl"></div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button onclick="saveAutoAlfa(false)" class="py-3 bg-white border border-red-200 text-red-600 font-bold rounded-xl">Nonaktifkan</button>
+                        <button onclick="saveAutoAlfa(true)" class="py-3 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan</button>
+                    </div>
+                </div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function saveAutoAlfa(on) {
+            if (needSb()) return;
+            const v = on ? ((document.getElementById('aaStart') || {}).value || '') : '';
+            if (on && !v) { showToast('Peringatan', 'Tanggal mulai wajib diisi.'); return; }
+            run(async () => { const { error } = await sb.from('profiles').update({ auto_alfa_start: v || null }).eq('id', mockState.uid); if (error) throw error; closeModal(); },
+                ['Tersimpan', on ? 'Alfa otomatis diaktifkan.' : 'Alfa otomatis dinonaktifkan.'], 'dashboard');
+        }
+        function openAlfaDates(sid) {
+            const st = studentById(sid); if (!st) return;
+            const rows = (mockState.attendanceRows || []).filter(a => a.sid === sid && a.status === 'ALFA' && isSchoolDay(a.date)).sort((a, b) => b.date.localeCompare(a.date));
+            openListModal(`Tanggal Alfa • ${st.name}`, `${rows.length} hari Alfa (batas ${alfaLimitDays()} hari per tahun ajaran). Gunakan Koreksi jika siswa sebenarnya hadir atau berizin.`,
+                rows.map(r => `<div class="flex items-center justify-between py-2.5 gap-3"><span class="font-bold text-santara-navy">${dayName(r.date)}, ${fmtDate(r.date)}<span class="block text-[10px] text-gray-400 font-medium">${r.derived ? 'Alfa otomatis' : 'Dicatat/ditandai'}</span></span>
+                    <button onclick="openAttendanceFix(${sid}, '${r.date}')" class="px-3 py-1.5 bg-white border border-santara-border rounded-lg text-[11px] font-bold text-santara-navy">Koreksi</button></div>`).join(''));
+        }
+        function openAttendanceFix(sid, date) {
+            const st = studentById(sid); if (!st) return;
+            const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
+            box.innerHTML = `
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Koreksi Absensi</h3>
+                    <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
+                    <p class="font-bold text-santara-navy">${st.name} • ${fmtDate(date)}</p>
+                    <div><label class="block font-bold mb-1">STATUS YANG BENAR</label>
+                        <select id="fixStatus" class="w-full p-3 border rounded-xl"><option value="HADIR">Hadir</option><option value="TERLAMBAT">Terlambat</option><option value="SAKIT">Sakit</option><option value="IZIN">Izin</option><option value="ALFA">Alfa (tetapkan)</option></select></div>
+                    <div><label class="block font-bold mb-1">ALASAN KOREKSI</label><input type="text" id="fixReason" maxlength="60" placeholder="mis. Hadir tetapi lupa scan" class="w-full p-3 border rounded-xl"></div>
+                    <button onclick="saveAttendanceFix(${sid}, '${date}')" class="w-full py-3 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan Koreksi</button>
+                </div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function saveAttendanceFix(sid, date) {
+            if (needSb()) return;
+            const status = (document.getElementById('fixStatus') || {}).value, reason = ((document.getElementById('fixReason') || {}).value || '').trim();
+            if (!reason) { showToast('Peringatan', 'Alasan koreksi wajib diisi.'); return; }
+            run(async () => {
+                const { error } = await sb.from('attendance').upsert([{ student_id: sid, att_date: date, status, scan_time: '-', source: ('koreksi-wali: ' + reason).slice(0, 90) }], { onConflict: 'student_id,att_date' });
+                if (error) throw error; closeModal();
+            }, ['Tersimpan', 'Absensi dikoreksi.'], null).then(ok => { if (ok) renderView(currentActiveRoute); });
+        }
+
         // ---------- Kalender hari libur (sekolah 5 hari kerja) ----------
         function holidayOf(iso) { return (mockState.holidays || []).find(h => h.date === iso) || null; }
         function isWeekendDate(iso) { const d = new Date(iso + 'T00:00:00Z').getUTCDay(); return d === 0 || d === 6; }
@@ -1189,6 +1297,10 @@
             mockState.qrSettings.startTime = p.qr_start;
             mockState.qrSettings.toleranceTime = p.qr_tolerance;
             mockState.holidays = (me.holidays || []).map(h => ({ date: h.h_date, name: h.name, type: h.type }));
+            mockState.autoAlfaStart = p.auto_alfa_start || '';
+            const aset = new Set(me.attendance.map(a => r.id + '|' + a.att_date));
+            me.attendance = me.attendance.concat(buildDerivedAlfa([{ id: r.id, created: jktDate(r.created_at) }], aset, me.permissions.map(x => ({ sid: r.id, date: x.perm_date, status: x.status })))
+                .map(d => ({ att_date: d.date, status: 'ALFA', scan_time: '-', created_at: d.createdAt, derived: true })));
             const today = todayISO();
             const sum = { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 };
             let t = null;
@@ -1196,7 +1308,7 @@
             const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
                 status: t ? t.status : (isSchoolDay(today) ? 'BELUM' : 'LIBUR'), time: t ? t.scan_time : '-', attendanceSummary: sum, username: r.nis, accountStatus: 'Aktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
             mockState.students = [st];
-            mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at }));
+            mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at, derived: !!a.derived }));
             const who = { studentName: st.name, nis: st.nis };
             mockState.violations = me.violations.map(x => ({ id: x.id, rawDate: x.vio_date, createdAt: x.created_at, ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }));
             mockState.counseling = me.counseling.map(x => ({ id: x.id, createdAt: x.created_at, rawDate: x.c_date, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
@@ -1635,7 +1747,7 @@ async function sendAlfaLateRecap() {
             if (needSb()) return;
             if (!isSchoolDay(todayISO())) { showToast('Hari Libur', `Hari ini libur (${unesc(dayOffReason(todayISO()))}). Rekap Alfa & Terlambat tidak diperlukan.`); return; }
             const unrec = mockState.students.filter(s => s.status === 'BELUM' && s.accountStatus === 'Aktif');
-            if (unrec.length && confirm(`${unrec.length} siswa belum tercatat hari ini. Tandai sebagai ALFA dan sertakan dalam rekap?`)) {
+            if (unrec.length && !mockState.autoAlfaStart && confirm(`${unrec.length} siswa belum tercatat hari ini. Tandai sebagai ALFA dan sertakan dalam rekap?`)) {
                 try {
                     const rows = unrec.map(s => ({ student_id: s.id, att_date: todayISO(), status: 'ALFA', scan_time: '-', source: 'wali' }));
                     const { error } = await sb.from('attendance').upsert(rows, { onConflict: 'student_id,att_date', ignoreDuplicates: true });
