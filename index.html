@@ -295,9 +295,9 @@
         // LOGO (opsional): unggah file gambar ke folder yang sama dengan index.html, lalu isi nama filenya di sini.
         // Contoh: const LOGO_SANTARA_URL = 'logo-santara.png';  const LOGO_SEKOLAH_URL = 'logo-sekolah.png';
         const LOGO_SANTARA_URL = 'logo-santara.png';
-        const LOGO_SEKOLAH_URL = 'login-bg.png';
+        const LOGO_SEKOLAH_URL = '';
         // Foto latar halaman login (opsional, tampil di sisi kiri komputer). Contoh: 'login-bg.jpg'
-        const LOGIN_BG_URL = '';
+        const LOGIN_BG_URL = 'login-bg.png';
         const LOGO_SANTARA_SRC = LOGO_SANTARA_URL || window.SANTARA_LOGO_EMBED || '';
         const SUPABASE_ANON_KEY = 'sb_publishable_9Ko7suUCCY44TuB9yuT0Cg_V9q6s7Jw';
         // anon key AMAN dipublikasikan; data dilindungi RLS di database.
@@ -738,7 +738,7 @@
             try { fn(); } catch (e) {
                 console.error(id, e);
                 const el = document.getElementById(id);
-                if (el) el.innerHTML = panelCard(`<div class="text-center py-8 text-xs text-red-600"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2 block"></i>Panel ini gagal dimuat.<br><button onclick="renderAnalytics()" class="mt-3 px-4 py-2 bg-red-50 border border-red-200 rounded-xl font-bold">Coba Lagi</button></div>`);
+                if (el) el.innerHTML = panelCard(`<div class="text-center py-8 text-xs text-red-600"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2 block"></i>Panel ini gagal dimuat.<br><button onclick="renderView(currentActiveRoute)" class="mt-3 px-4 py-2 bg-red-50 border border-red-200 rounded-xl font-bold">Coba Lagi</button></div>`);
             }
         }
 
@@ -1045,6 +1045,400 @@
             const ev = buildActivities();
             el.innerHTML = panelCard(panelHead('fa-clock-rotate-left', 'bg-indigo-50 text-indigo-600', 'Aktivitas Terbaru', 'Klik aktivitas untuk membuka profil siswa') +
                 (ev.length ? `<div class="divide-y divide-gray-50">${ev.slice(0, 8).map(activityItemHtml).join('')}</div><button onclick="openActivityAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua</button>` : emptyBox('fa-clock-rotate-left', 'Belum ada aktivitas tercatat.')));
+        }
+
+        // ---------- Tahap C: Analitik Kondisi Kelas ----------
+        let anPage = { tab: 'ringkasan', period: 'month', from: '', to: '' };
+        let kpiR = null;
+        const AN_TABS = [['ringkasan', 'Ringkasan', 'fa-gauge-high'], ['kehadiran', 'Kehadiran', 'fa-calendar-check'], ['kedisiplinan', 'Kedisiplinan', 'fa-scale-balanced'], ['pembinaan', 'Pembinaan', 'fa-handshake-angle'], ['laporan', 'Laporan', 'fa-file-lines']];
+        const IDX_DEF = { att: 35, punct: 15, disc: 30, stage: 20 };
+        const IDX_LBL = { att: 'Kehadiran', punct: 'Ketepatan waktu', disc: 'Disiplin (rata-rata poin)', stage: 'Siswa berstatus Aman' };
+        const DAY_NAMES = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+        function dow(iso) { return new Date(iso + 'T00:00:00Z').getUTCDay(); }
+        function daysBetween(a, b) { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000); }
+        function activeStudents() { return mockState.students.filter(x => x.accountStatus === 'Aktif'); }
+        function idxWeights() { try { return Object.assign({}, IDX_DEF, JSON.parse(localStorage.getItem('santara_idx') || '{}')); } catch (e) { return Object.assign({}, IDX_DEF); } }
+        function rangeFor(mode) {
+            const t = todayISO(), yb = yearBounds();
+            let from = t.slice(0, 8) + '01', to = t;
+            if (mode === '30') from = dateAddDays(t, -29);
+            else if (mode === 'semester') { const m = +t.slice(5, 7); from = (m >= 7 ? t.slice(0, 4) + '-07-01' : t.slice(0, 4) + '-01-01'); }
+            else if (mode === 'year') from = yb.from;
+            else if (mode === 'custom') { from = anPage.from || dateAddDays(t, -29); to = anPage.to || t; }
+            if (from > to) { const x = from; from = to; to = x; }
+            const len = daysBetween(from, to) + 1, prevTo = dateAddDays(from, -1);
+            return { from, to, prevFrom: dateAddDays(prevTo, -(len - 1)), prevTo, label: `${fmtDate(from)} – ${fmtDate(to)}` };
+        }
+        function anRange() { return rangeFor(anPage.period); }
+        function periodMetrics(from, to) {
+            const recs = validRecords().filter(r => r.date >= from && r.date <= to);
+            const c = countStatus(recs), total = recs.length, present = c.HADIR + c.TERLAMBAT;
+            const vios = mockState.violations.filter(v => (v.status || 'TERBUKTI') === 'TERBUKTI' && v.rawDate >= from && v.rawDate <= to);
+            const pts = vios.reduce((n, v) => n + (v.pts || 0), 0) + c.TERLAMBAT * ruleW('TERLAMBAT', 1) + c.ALFA * ruleW('ALFA', 2);
+            const ivs = mockState.counseling.filter(x => x.status === 'SELESAI' && (x.rawDate || '') >= from && (x.rawDate || '') <= to).length;
+            return { recs, c, total, attPct: total ? round1(present * 100 / total) : null, latePct: present ? round1(c.TERLAMBAT * 100 / present) : null, vios, pts, ivs, alfa: c.ALFA };
+        }
+        function classIndex(m) {
+            const act = activeStudents(); if (!act.length) return null;
+            const W = idxWeights(), ds = act.map(computeDiscipline);
+            const comps = { att: m.attPct, punct: m.latePct == null ? null : round1(100 - m.latePct), disc: Math.max(0, round1(100 - ds.reduce((n, d) => n + d.total, 0) / act.length)), stage: round1(ds.filter(d => d.stage === 0).length * 100 / act.length) };
+            let sw = 0, sum = 0; Object.keys(comps).forEach(k => { if (comps[k] != null) { sw += W[k]; sum += comps[k] * W[k]; } });
+            const idx = sw ? Math.round(sum / sw) : null;
+            const band = idx == null ? ['-', '#9ca3af'] : idx >= 85 ? ['Sangat Baik', '#16a34a'] : idx >= 70 ? ['Baik', '#2563eb'] : idx >= 55 ? ['Perlu Perhatian', '#d97706'] : ['Kritis', '#dc2626'];
+            return { idx, comps, W, band };
+        }
+        function indexCardHtml(ix) {
+            if (!ix || ix.idx == null) return panelCard(panelHead('fa-gauge-high', 'bg-teal-50 text-santara-teal', 'Indeks Kondisi Kelas', '') + emptyBox('fa-gauge-high', 'Belum cukup data untuk menghitung indeks.'));
+            const bars = Object.keys(ix.comps).map(k => `<div><div class="flex justify-between text-[11px] mb-0.5"><span class="font-semibold text-gray-600">${IDX_LBL[k]} <span class="text-gray-400">(${ix.W[k]}%)</span></span><span class="font-black text-santara-navy">${ix.comps[k] == null ? '-' : ix.comps[k]}</span></div><div class="h-2 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${ix.comps[k] || 0}%;background:${ix.band[1]}"></div></div></div>`).join('');
+            return panelCard(panelHead('fa-gauge-high', 'bg-teal-50 text-santara-teal', 'Indeks Kondisi Kelas', 'Skor gabungan 0–100 dengan rincian terbuka', `<button onclick="openIdxWeights()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-gray-50 border border-santara-border text-santara-navy">Atur Bobot</button>`) +
+                `<div class="flex items-center gap-5"><div class="relative w-32 h-32 shrink-0 rounded-full" style="background:conic-gradient(${ix.band[1]} ${ix.idx * 3.6}deg,#e5e7eb 0deg)"><div class="absolute inset-2.5 bg-white rounded-full flex flex-col items-center justify-center"><span class="text-3xl font-black text-santara-navy">${ix.idx}</span><span class="text-[10px] font-extrabold" style="color:${ix.band[1]}">${ix.band[0]}</span></div></div><div class="flex-1 space-y-2.5">${bars}</div></div>` +
+                '<p class="text-[10px] text-gray-400">85+ Sangat Baik • 70–84 Baik • 55–69 Perlu Perhatian • di bawah 55 Kritis. Indeks adalah alat bantu keputusan, bukan penilaian kinerja.</p>');
+        }
+        function openIdxWeights() {
+            const W = idxWeights(), modal = document.getElementById('modalContainer'), box = document.getElementById('modalContentBox');
+            box.innerHTML = `<div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Bobot Indeks Kondisi Kelas</h3><button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
+                <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto"><p class="text-gray-500">Bobot dinormalkan otomatis. Pengaturan tersimpan di perangkat ini.</p>
+                ${Object.keys(IDX_DEF).map(k => `<div class="flex items-center justify-between gap-3"><label class="font-bold text-santara-navy">${IDX_LBL[k]}</label><input type="number" id="iw_${k}" min="0" max="100" value="${W[k]}" class="w-20 p-2 border rounded-lg text-center font-bold"></div>`).join('')}
+                <div class="grid grid-cols-2 gap-3 pt-2"><button onclick="saveIdxWeights(true)" class="py-3 bg-white border border-santara-border font-bold rounded-xl">Bawaan</button><button onclick="saveIdxWeights(false)" class="py-3 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan</button></div></div>`;
+            modal.classList.add('flex'); modal.classList.remove('hidden');
+        }
+        function saveIdxWeights(reset) {
+            const w = {}; Object.keys(IDX_DEF).forEach(k => { const v = parseInt((document.getElementById('iw_' + k) || {}).value); w[k] = Number.isFinite(v) && v >= 0 ? Math.min(100, v) : IDX_DEF[k]; });
+            try { if (reset) localStorage.removeItem('santara_idx'); else localStorage.setItem('santara_idx', JSON.stringify(w)); } catch (e) { /* abaikan */ }
+            closeModal(); renderView(currentActiveRoute);
+        }
+
+        // ----- KPI -----
+        function deltaHtml(cur, prev, goodUp) {
+            if (cur == null || prev == null) return '<span class="text-gray-400">tanpa pembanding</span>';
+            const d = round1(cur - prev); if (!d) return 'sama dengan periode lalu';
+            return `<span class="${(goodUp ? d > 0 : d < 0) ? 'text-green-600' : 'text-red-600'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d)} dari periode lalu</span>`;
+        }
+        function kpiCard(icon, tone, label, value, sub, click) {
+            return `<button onclick="${click}" class="text-left p-4 rounded-2xl border border-santara-border bg-white hover:shadow-md transition"><span class="w-8 h-8 rounded-lg ${tone} flex items-center justify-center text-sm mb-2"><i class="fa-solid ${icon}"></i></span><span class="block text-[10px] font-bold text-santara-textSec uppercase tracking-wide">${label}</span><span class="block text-2xl font-black text-santara-navy">${value}</span><span class="block text-[11px] text-gray-500 font-semibold">${sub}</span></button>`;
+        }
+        function pendingFollowups() {
+            const al = computeAllAlerts();
+            const acts = activeStudents().map(st => ({ st, n: requiredActions(st).filter(a => !a.done).length })).filter(x => x.n > 0);
+            return { alerts: al, acts, total: al.length + acts.reduce((n, x) => n + x.n, 0) };
+        }
+        function kpisHtml(m) {
+            const act = activeStudents(), ds = act.map(computeDiscipline), pf = pendingFollowups();
+            const severe = m.cur.vios.filter(v => v.category === 'Berat').length;
+            return kpiCard('fa-user-check', 'bg-green-50 text-green-600', 'Tingkat Kehadiran', m.cur.attPct == null ? '-' : m.cur.attPct + '%', deltaHtml(m.cur.attPct, m.prev.attPct, true), "kpiClick('att')") +
+                kpiCard('fa-clock', 'bg-yellow-50 text-yellow-600', 'Keterlambatan', m.cur.latePct == null ? '-' : m.cur.latePct + '%', deltaHtml(m.cur.latePct, m.prev.latePct, false), "kpiClick('late')") +
+                kpiCard('fa-layer-group', 'bg-orange-50 text-orange-600', 'Siswa Tahap II+', ds.filter(d => d.stage >= 2).length, `${ds.filter(d => d.stage >= 1).length} siswa di Tahap I+`, "kpiClick('stage')") +
+                kpiCard('fa-triangle-exclamation', 'bg-red-50 text-red-600', 'Kasus Berat', severe, `${m.cur.vios.length} pelanggaran periode ini`, "kpiClick('severe')") +
+                kpiCard('fa-list-check', 'bg-blue-50 text-blue-600', 'Tindak Lanjut Tertunda', pf.total, `${pf.alerts.length} alert • ${pf.acts.reduce((n, x) => n + x.n, 0)} tindakan`, "kpiClick('pending')") +
+                kpiCard('fa-comments', 'bg-purple-50 text-purple-600', 'Pembinaan Dicatat', m.cur.ivs, deltaHtml(m.cur.ivs, m.prev.ivs, true), "kpiClick('ivs')");
+        }
+        function kpiClick(k) {
+            const r = kpiR || rangeFor('month'), m = periodMetrics(r.from, r.to);
+            if (k === 'att') { anPage.tab = 'kehadiran'; renderView('analytics'); }
+            else if (k === 'late') openAttendanceDetail('Terlambat • ' + r.label, m.recs.filter(x => x.status === 'TERLAMBAT'));
+            else if (k === 'stage') openStageAtLeast(2);
+            else if (k === 'severe') openListModal('Kasus Berat • ' + r.label, null, m.vios.filter(v => v.category === 'Berat').map(v => violationRowHtml(v)).join(''));
+            else if (k === 'ivs') openListModal('Pembinaan Dicatat • ' + r.label, null, mockState.counseling.filter(x => x.status === 'SELESAI' && (x.rawDate || '') >= r.from && (x.rawDate || '') <= r.to).map(x => { const st = studentByNis(x.nis); return `<button ${st ? `onclick="openStudentFromModal(${st.id})"` : ''} class="w-full text-left py-2.5"><span class="block font-bold text-santara-navy">${st ? st.name : x.nis}</span><span class="block text-[10px] text-gray-400">${fmtDate(x.rawDate)} • ${x.category}</span></button>`; }).join(''));
+            else if (k === 'pending') {
+                const pf = pendingFollowups();
+                openListModal('Tindak Lanjut Tertunda', `${pf.alerts.length} alert aktif • ${pf.acts.length} siswa dengan tindakan wajib`,
+                    pf.alerts.map(a => `<button onclick="closeModal(); openInterventionModal(${a.st.id})" class="w-full flex justify-between py-2.5 text-left"><span class="font-bold text-santara-navy">${a.st.name}</span><span class="text-[11px] text-amber-700 font-bold">Alert • ${a.reasons[0]}</span></button>`).join('') +
+                    pf.acts.map(x => `<button onclick="closeModal(); openActionManager(${x.st.id})" class="w-full flex justify-between py-2.5 text-left"><span class="font-bold text-santara-navy">${x.st.name}</span><span class="text-[11px] text-blue-700 font-bold">${x.n} tindakan wajib</span></button>`).join(''));
+            }
+        }
+        function violationRowHtml(v) {
+            const st = studentByNis(v.nis);
+            return `<button ${st ? `onclick="openStudentFromModal(${st.id})"` : ''} class="w-full text-left py-2.5"><span class="block font-bold text-santara-navy">${st ? st.name : v.nis}</span><span class="block text-[10px] text-gray-400">${fmtDate(v.rawDate)} • ${v.violation} • +${v.pts || 0} poin</span></button>`;
+        }
+        function openStageAtLeast(n) {
+            const list = activeStudents().filter(x => computeDiscipline(x).stage >= n);
+            openListModal(`Siswa Tahap ${n} ke atas`, `${list.length} siswa`, list.map(x => { const d = computeDiscipline(x); return `<button onclick="closeModal(); openActionManager(${x.id})" class="w-full flex justify-between py-2.5 text-left"><span class="font-bold text-santara-navy">${x.name}</span><span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold ${STAGES[d.stage][1]}">${STAGES[d.stage][0].split(' • ')[0]} • ${d.total} poin</span></button>`; }).join(''));
+        }
+        function renderDashIndex() {
+            const box = document.getElementById('analyticsBox'); if (!box) return;
+            try {
+                const r = rangeFor('month'); kpiR = r; const m = { cur: periodMetrics(r.from, r.to), prev: periodMetrics(r.prevFrom, r.prevTo) };
+                box.innerHTML = `<div class="space-y-4"><div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"><h2 class="font-extrabold text-santara-navy text-base">Kondisi Kelas ${esc(mockState.schoolConfig.className)} • Bulan Ini</h2>
+                    <button onclick="anPage.tab='ringkasan'; renderView('analytics')" class="px-4 py-2 bg-santara-navy text-white rounded-xl text-xs font-bold shadow-md"><i class="fa-solid fa-chart-line mr-1.5"></i>Buka Analitik Lengkap</button></div>
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6"><div>${indexCardHtml(classIndex(m.cur))}</div><div class="xl:col-span-2 grid grid-cols-2 lg:grid-cols-3 gap-3">${kpisHtml(m)}</div></div></div>`;
+            } catch (e) { console.error(e); box.innerHTML = panelCard('<p class="text-xs text-red-600 text-center py-6">Ringkasan kondisi kelas gagal dimuat.</p>'); }
+        }
+
+        // ----- statistik turunan -----
+        function weekdayStats(recs) {
+            const g = {}; recs.forEach(r => { const d = dow(r.date); (g[d] || (g[d] = [])).push(r); });
+            return [1, 2, 3, 4, 5, 6, 0].filter(d => g[d] || d >= 1 && d <= 5).map(d => { const rs = g[d] || [], c = countStatus(rs); return { d, name: DAY_NAMES[d], rs, c, total: rs.length, attPct: rs.length ? round1((c.HADIR + c.TERLAMBAT) * 100 / rs.length) : null }; });
+        }
+        function disciplineAsOf(st, iso) {
+            const { from } = yearBounds();
+            const rows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.date >= from && a.date <= iso && isSchoolDay(a.date) && !isSuspended(st.id, a.date));
+            const late = rows.filter(a => a.status === 'TERLAMBAT').length, alfa = rows.filter(a => a.status === 'ALFA').length;
+            const vs = mockState.violations.filter(v => v.nis === st.nis && (v.status || 'TERBUKTI') === 'TERBUKTI' && (v.rawDate || '') >= from && (v.rawDate || '') <= iso);
+            const viol = vs.reduce((n, v) => n + (v.pts || 0), 0), prot = vs.reduce((n, v) => n + (((ruleById(v.ruleId) || {}).protected) ? (v.pts || 0) : 0), 0);
+            const ay = acadYear(), rem = Math.min(REMISSION_CAP, (mockState.remissions || []).filter(x => x.sid === st.id && x.status === 'APPROVED' && x.year === ay && String(x.createdAt || '').slice(0, 10) <= iso).reduce((n, x) => n + x.points, 0));
+            const total = prot + Math.max(0, late * ruleW('TERLAMBAT', 1) + alfa * ruleW('ALFA', 2) + viol - prot - rem);
+            let stage = total >= 100 ? 4 : total >= 75 ? 3 : total >= 50 ? 2 : total >= 25 ? 1 : 0;
+            if (vs.some(v => (ruleById(v.ruleId) || {}).critical) || alfa >= alfaLimitDays()) stage = 4;
+            return { total, stage };
+        }
+        function stageMoves(r) {
+            const act = activeStudents(), before = [0, 0, 0, 0, 0], after = [0, 0, 0, 0, 0], up = [], down = [];
+            act.forEach(st => { const b = disciplineAsOf(st, dateAddDays(r.from, -1)), a = disciplineAsOf(st, r.to); before[b.stage]++; after[a.stage]++; if (a.stage > b.stage) up.push({ st, b, a }); else if (a.stage < b.stage) down.push({ st, b, a }); });
+            return { before, after, up, down };
+        }
+        function causeStats(r) {
+            const m = periodMetrics(r.from, r.to), map = {};
+            m.vios.forEach(v => { const k = normKey(v.violation); const x = map[k] || (map[k] = { key: k, label: v.violation, pts: 0, n: 0, kind: 'v' }); x.pts += v.pts || 0; x.n++; });
+            if (m.c.TERLAMBAT) map.__late = { key: '__late', label: 'Terlambat', pts: m.c.TERLAMBAT * ruleW('TERLAMBAT', 1), n: m.c.TERLAMBAT, kind: 'late' };
+            if (m.c.ALFA) map.__alfa = { key: '__alfa', label: 'Alfa (tidak hadir)', pts: m.c.ALFA * ruleW('ALFA', 2), n: m.c.ALFA, kind: 'alfa' };
+            return Object.values(map).sort((a, b) => b.pts - a.pts);
+        }
+        function absenceStreaks(r, minLen) {
+            const absent = ['ALFA', 'SAKIT', 'IZIN'], by = {};
+            validRecords().forEach(x => { (by[x.sid] || (by[x.sid] = {}))[x.date] = x.status; });
+            const out = [], t = todayISO(), { from } = yearBounds();
+            activeStudents().forEach(st => {
+                const m = by[st.id] || {}; let run = [];
+                const flush = () => { if (run.length >= minLen && run[run.length - 1].d >= r.from && run[0].d <= r.to) out.push({ st, run }); run = []; };
+                for (let d = from; d <= t; d = dateAddDays(d, 1)) { if (!isSchoolDay(d)) continue; const x = m[d]; if (x && absent.includes(x)) run.push({ d, s: x }); else flush(); }
+                flush();
+            });
+            return out.sort((a, b) => b.run.length - a.run.length);
+        }
+        function interventionStats(r) {
+            const t = Date.now(), DAY = 86400000, w = { late: ruleW('TERLAMBAT', 1), alfa: ruleW('ALFA', 2) }, out = { delays: [], before: 0, after: 0, n: 0, dec: 0, recN: 0, rec: 0 };
+            activeStudents().forEach(st => {
+                const ivs = mockState.counseling.filter(c => c.nis === st.nis && c.status === 'SELESAI' && c.createdAt).map(c => Date.parse(c.createdAt)).sort((a, b) => a - b);
+                if (!ivs.length) return;
+                const ev = [];
+                mockState.violations.filter(v => v.nis === st.nis && (v.status || 'TERBUKTI') === 'TERBUKTI' && v.createdAt).forEach(v => ev.push({ t: Date.parse(v.createdAt), p: v.pts || 0, bad: true }));
+                (mockState.attendanceRows || []).filter(a => a.sid === st.id && isSchoolDay(a.date)).forEach(a => { if (a.status === 'ALFA') ev.push({ t: Date.parse(a.createdAt), p: w.alfa, bad: true }); else if (a.status === 'TERLAMBAT') ev.push({ t: Date.parse(a.createdAt), p: w.late, bad: false }); });
+                ivs.forEach((tv, i) => {
+                    const prev = i ? ivs[i - 1] : -Infinity, d = jktDate(new Date(tv).toISOString());
+                    const trig = ev.filter(e => e.t > prev && e.t <= tv).sort((a, b) => a.t - b.t)[0];
+                    if (d >= r.from && d <= r.to) {
+                        if (trig) out.delays.push((tv - trig.t) / DAY);
+                        if (tv + 30 * DAY <= t) { out.n++; const b = ev.filter(e => e.t > tv - 30 * DAY && e.t <= tv).reduce((n, e) => n + e.p, 0), a = ev.filter(e => e.t > tv && e.t <= tv + 30 * DAY).reduce((n, e) => n + e.p, 0); out.before += b; out.after += a; if (a < b) out.dec++; }
+                    }
+                    if (tv + 30 * DAY <= t) { out.recN++; if (ev.some(e => e.bad && e.t > tv && e.t <= tv + 30 * DAY)) out.rec++; }
+                });
+            });
+            return out;
+        }
+        function nearThreshold() {
+            const t = todayISO(), back = dateAddDays(t, -29), TH = [25, 50, 75, 100];
+            return activeStudents().map(st => {
+                const d = computeDiscipline(st), next = TH.find(x => x > d.total); if (!next || d.stage === 4 || next - d.total > 10) return null;
+                const gap = next - d.total, rate = Math.max(0, d.total - disciplineAsOf(st, back).total) / 30;
+                return { st, d, next, gap, eta: rate > 0 ? dateAddDays(t, Math.ceil(gap / rate)) : null };
+            }).filter(Boolean).sort((a, b) => a.gap - b.gap).slice(0, 8);
+        }
+        function buildNarrative(r, m) {
+            const out = [], c = m.cur, p = m.prev;
+            if (c.total) out.push(`Tingkat kehadiran kelas ${c.attPct}% pada ${r.label}` + (p.attPct != null ? ` (${c.attPct >= p.attPct ? 'naik' : 'turun'} ${Math.abs(round1(c.attPct - p.attPct))} poin dibanding periode sebelumnya).` : '.'));
+            else out.push('Belum ada data kehadiran pada periode ini.');
+            const wd = weekdayStats(c.recs).filter(x => x.total >= 10 && x.attPct != null).sort((a, b) => a.attPct - b.attPct)[0];
+            if (wd) out.push(`Hari dengan kehadiran terendah adalah ${wd.name} (${wd.attPct}%).`);
+            if (c.latePct != null) out.push(`Keterlambatan mencapai ${c.latePct}% dari siswa yang hadir; terdapat ${c.alfa} hari Alfa.`);
+            const mv = stageMoves(r);
+            out.push(`${mv.up.length} siswa naik tahap dan ${mv.down.length} siswa turun tahap sepanjang periode.`);
+            const cs = causeStats(r)[0]; if (cs) out.push(`Penyebab poin terbanyak: ${cs.label} (${cs.pts} poin dari ${cs.n} kasus).`);
+            const pf = pendingFollowups(); out.push(pf.total ? `Saat ini ${pf.alerts.length} alert aktif dan ${pf.acts.reduce((n, x) => n + x.n, 0)} tindakan wajib belum selesai.` : 'Tidak ada tindak lanjut yang tertunda.');
+            if (c.total < 30) out.push('Catatan: jumlah data masih sedikit, sehingga persentase mudah bergejolak.');
+            return out;
+        }
+
+        // ----- halaman -----
+        function setAnTab(t) { anPage.tab = t; renderView('analytics'); }
+        function setAnPeriod(p) { anPage.period = p; if (p === 'custom' && !anPage.from) { anPage.from = dateAddDays(todayISO(), -29); anPage.to = todayISO(); } renderView('analytics'); }
+        function applyAnRange() {
+            const f = (document.getElementById('anPFrom') || {}).value, t = (document.getElementById('anPTo') || {}).value;
+            if (f && t) { anPage.from = f; anPage.to = t; renderView('analytics'); }
+        }
+        function renderAnalyticsPage(area) {
+            const r = anRange(), sc = mockState.schoolConfig;
+            const presets = [['month', 'Bulan Ini'], ['30', '30 Hari'], ['semester', 'Semester Ini'], ['year', 'Tahun Ajaran'], ['custom', 'Rentang']];
+            area.innerHTML = `<div class="space-y-6">
+                <div class="print-only" style="margin-bottom:12px"><h1 style="font-size:18px;font-weight:800">LAPORAN ANALITIK KONDISI KELAS ${esc(sc.className)}</h1><p style="font-size:12px">${esc(sc.schoolName)} • Tahun Ajaran ${esc(sc.academicYear)} • Periode ${r.label} • Dicetak ${tglPanjang()}</p><hr></div>
+                <div class="no-print bg-white rounded-3xl border border-santara-border shadow-sm p-4 md:p-5 space-y-3">
+                    <div class="flex flex-wrap items-center gap-2"><span class="text-[11px] font-bold text-santara-textSec uppercase tracking-wide mr-1">Periode</span>${presets.map(p => tabBtn(p[1], anPage.period === p[0], `setAnPeriod('${p[0]}')`)).join('')}
+                        ${anPage.period === 'custom' ? `<input type="date" id="anPFrom" value="${r.from}" onchange="applyAnRange()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold"><span class="text-xs text-gray-400 font-bold">s/d</span><input type="date" id="anPTo" value="${r.to}" onchange="applyAnRange()" class="px-3 py-2 border border-santara-border rounded-xl text-xs font-semibold">` : ''}
+                        <span class="text-[11px] text-gray-400 font-medium ml-auto">${r.label} • dibanding ${fmtDate(r.prevFrom)} – ${fmtDate(r.prevTo)}</span></div>
+                    <div class="flex gap-2 overflow-x-auto pb-1">${AN_TABS.map(t => `<button onclick="setAnTab('${t[0]}')" class="shrink-0 px-4 py-2.5 rounded-xl text-xs font-bold border ${anPage.tab === t[0] ? 'bg-santara-navy text-white border-santara-navy' : 'bg-gray-50 text-santara-navy border-santara-border hover:bg-gray-100'}"><i class="fa-solid ${t[2]} mr-1.5"></i>${t[1]}</button>`).join('')}</div>
+                </div>
+                <div id="anBody"></div></div>`;
+            renderAnTab();
+        }
+        function renderAnTab() {
+            const body = document.getElementById('anBody'); if (!body) return;
+            const t = anPage.tab, r = anRange(); kpiR = r;
+            ['trend', 'donut', 'hours', 'pareto'].forEach(destroyChart);
+            if (t === 'ringkasan') {
+                const m = { cur: periodMetrics(r.from, r.to), prev: periodMetrics(r.prevFrom, r.prevTo) };
+                body.innerHTML = `<div class="grid grid-cols-1 xl:grid-cols-3 gap-6"><div>${indexCardHtml(classIndex(m.cur))}</div><div class="xl:col-span-2 grid grid-cols-2 lg:grid-cols-3 gap-3">${kpisHtml(m)}</div></div>
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-6"><div id="panelCondition"></div><div id="panelActivity" class="xl:col-span-2"></div></div>`;
+                safePanel('panelCondition', renderConditionPanel); safePanel('panelActivity', renderActivityPanel);
+            } else if (t === 'kehadiran') {
+                body.innerHTML = `<div class="grid grid-cols-1 xl:grid-cols-3 gap-6"><div id="panelTrend" class="xl:col-span-2"></div><div id="panelDonut"></div></div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6"><div id="panelHeat"></div><div id="panelHours"></div></div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6"><div id="panelStreak"></div><div id="panelIzin"></div></div>`;
+                safePanel('panelTrend', renderTrendPanel); safePanel('panelDonut', renderDonutPanel); safePanel('panelHeat', renderHeatPanel); safePanel('panelHours', renderHoursPanel); safePanel('panelStreak', renderStreakPanel); safePanel('panelIzin', renderIzinPanel);
+            } else if (t === 'kedisiplinan') {
+                body.innerHTML = `<div class="grid grid-cols-1 xl:grid-cols-2 gap-6"><div id="panelMove"></div><div id="panelCompose"></div></div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6"><div id="panelPareto"></div><div id="panelTop5"></div></div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6"><div id="panelNear"></div><div id="panelRepeat"></div></div>`;
+                safePanel('panelMove', renderMovePanel); safePanel('panelCompose', renderComposePanel); safePanel('panelPareto', renderParetoPanel); safePanel('panelTop5', renderTop5Panel); safePanel('panelNear', renderNearPanel); safePanel('panelRepeat', renderRepeatPanel);
+            } else if (t === 'pembinaan') {
+                body.innerHTML = `<div class="grid grid-cols-1 xl:grid-cols-2 gap-6"><div id="panelProc"></div><div id="panelEffect"></div></div><div id="disciplineBox" class="mt-6"></div>`;
+                safePanel('panelProc', renderProcPanel); safePanel('panelEffect', renderEffectPanel); renderDisciplineBoxes();
+            } else renderReportTab(body, r);
+        }
+
+        // ----- panel kehadiran -----
+        function heatColor(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+        function openHeatDetail(d, k) { const r = anRange(); const rs = validRecords().filter(x => x.date >= r.from && x.date <= r.to && dow(x.date) === d && (k === 'ALL' || x.status === k)); openAttendanceDetail(`${k === 'ALL' ? 'Semua status' : STATUS_META[k].label} • ${DAY_NAMES[d]}`, rs); }
+        function renderHeatPanel() {
+            const el = document.getElementById('panelHeat'); if (!el) return;
+            const r = anRange(), ws = weekdayStats(validRecords().filter(x => x.date >= r.from && x.date <= r.to)).filter(x => x.total || (x.d >= 1 && x.d <= 5));
+            const head = panelHead('fa-table-cells', 'bg-red-50 text-red-600', 'Peta Panas Kehadiran per Hari', r.label);
+            if (!ws.some(x => x.total)) { el.innerHTML = panelCard(head + emptyBox('fa-table-cells', 'Belum ada data kehadiran pada periode ini.')); return; }
+            const cell = (w, k) => { const pct = w.total ? w.c[k] * 100 / w.total : 0, a = k === 'HADIR' ? 0.12 + 0.78 * pct / 100 : 0.08 + 0.82 * Math.min(1, pct / 30);
+                return `<td class="p-1"><button onclick="openHeatDetail(${w.d}, '${k}')" class="w-full py-2.5 rounded-lg text-[11px] font-bold ${a > 0.55 ? 'text-white' : 'text-santara-navy'}" style="background:${heatColor(STATUS_META[k].color, a.toFixed(2))}">${round1(pct)}%<span class="block text-[9px] font-semibold opacity-80">${w.c[k]}</span></button></td>`; };
+            el.innerHTML = panelCard(head + `<div class="overflow-x-auto"><table class="w-full text-xs min-w-[420px]"><thead><tr class="text-[10px] uppercase text-gray-400"><th class="text-left p-1">Hari</th>${STATUS_KEYS.map(k => `<th class="p-1">${STATUS_META[k].label}</th>`).join('')}<th class="p-1">n</th></tr></thead>
+                <tbody>${ws.map(w => `<tr><td class="p-1 font-bold text-santara-navy">${w.name}</td>${STATUS_KEYS.map(k => cell(w, k)).join('')}<td class="p-1 text-center text-gray-500 font-semibold">${w.total}</td></tr>`).join('')}</tbody></table></div><p class="text-[10px] text-gray-400">Persentase dihitung per hari dari total catatan hari itu. Klik sel untuk melihat siswanya.</p>`);
+        }
+        function parseHM(t) { const m = /(\d{1,2}):(\d{2})/.exec(t || ''); return m ? (+m[1]) * 60 + (+m[2]) : null; }
+        function renderHoursPanel() {
+            const el = document.getElementById('panelHours'); if (!el) return;
+            destroyChart('hours');
+            const r = anRange(), head = panelHead('fa-clock', 'bg-yellow-50 text-yellow-600', 'Histogram Jam Kedatangan', 'Dari waktu scan QR • ' + r.label);
+            const recs = validRecords().filter(x => x.date >= r.from && x.date <= r.to && (x.status === 'HADIR' || x.status === 'TERLAMBAT') && parseHM(x.time) != null);
+            if (!recs.length) { el.innerHTML = panelCard(head + emptyBox('fa-clock', 'Belum ada data jam scan pada periode ini.')); return; }
+            if (!chartsReady()) { el.innerHTML = panelCard(head + emptyBox('fa-plug-circle-exclamation', 'Pustaka grafik gagal dimuat.')); return; }
+            const mins = recs.map(x => parseHM(x.time)), lo = Math.floor(Math.min(...mins) / 10) * 10, hi = Math.min(Math.floor(Math.max(...mins) / 10) * 10, lo + 300), tol = parseHM(mockState.qrSettings.toleranceTime) || 435;
+            const bins = []; for (let b = lo; b <= hi; b += 10) bins.push(b);
+            const fm = b => `${String(Math.floor(b / 60)).padStart(2, '0')}:${String(b % 60).padStart(2, '0')}`;
+            const groups = bins.map(b => recs.filter(x => { const v = parseHM(x.time); return v >= b && v < b + 10 || (b === hi && v >= b); }));
+            el.innerHTML = panelCard(head + '<div class="relative h-64"><canvas id="hoursChart"></canvas></div><p class="text-[10px] text-gray-400">Hijau = tepat waktu (hingga ' + fm(tol) + '), oranye = terlambat. Klik batang untuk melihat siswanya.</p>');
+            charts.hours = new Chart(document.getElementById('hoursChart'), { type: 'bar', data: { labels: bins.map(fm), datasets: [{ label: 'Jumlah siswa', data: groups.map(g => g.length), backgroundColor: bins.map(b => b >= tol ? '#f59e0b' : '#22c55e'), borderRadius: 4 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: 'Jumlah siswa' } }, x: { title: { display: true, text: 'Jam scan (WIB)' } } },
+                    onClick: (e, els) => { if (els.length) openAttendanceDetail(`Scan ${fm(bins[els[0].index])}–${fm(bins[els[0].index] + 9)}`, groups[els[0].index]); } } });
+        }
+        function renderStreakPanel() {
+            const el = document.getElementById('panelStreak'); if (!el) return;
+            const r = anRange(), list = absenceStreaks(r, 3);
+            el.innerHTML = panelCard(panelHead('fa-person-walking-arrow-right', 'bg-red-50 text-red-600', 'Tidak Hadir Beruntun (3 Hari Sekolah+)', `${list.length} siswa • ${r.label}`) +
+                (list.length ? `<div class="divide-y divide-gray-100">${list.slice(0, 10).map(x => `<button onclick="openStudentFromModal(${x.st.id})" class="w-full flex items-center justify-between py-2.5 gap-3 text-left"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${x.st.name}</span><span class="block text-[10px] text-gray-400">${fmtDate(x.run[0].d)} – ${fmtDate(x.run[x.run.length - 1].d)}</span></span><span class="px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-[11px] font-extrabold shrink-0">${x.run.length} hari</span></button>`).join('')}</div>` : emptyBox('fa-circle-check', 'Tidak ada siswa yang tidak hadir 3 hari sekolah beruntun.')) +
+                '<p class="text-[10px] text-gray-400">Alfa, sakit, dan izin berurutan pada hari sekolah. Hari libur tidak memutus urutan.</p>');
+        }
+        function renderIzinPanel() {
+            const el = document.getElementById('panelIzin'); if (!el) return;
+            const pend = (mockState.permissions || []).filter(p => p.status === 'PENDING').sort((a, b) => a.rawDate.localeCompare(b.rawDate));
+            const row = p => { const dl = Date.parse(dateAddDays(p.rawDate, 2) + 'T00:00:00+07:00'), h = (dl - Date.now()) / 3600000, fut = p.rawDate > todayISO();
+                const tag = fut ? ['Tanggal belum tiba', 'bg-gray-100 text-gray-600'] : h < 0 ? [`Terlewat ${Math.ceil(-h)} jam`, 'bg-red-100 text-red-700'] : h < 24 ? [`${Math.floor(h)} jam lagi`, 'bg-amber-100 text-amber-800'] : [`${Math.floor(h)} jam lagi`, 'bg-green-100 text-green-700'];
+                return `<button onclick="showPendingAllDates()" class="w-full flex items-center justify-between py-2.5 gap-3 text-left"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${p.studentName}</span><span class="block text-[10px] text-gray-400">${p.category} • ${p.date}</span></span><span class="px-2.5 py-1 rounded-full ${tag[1]} text-[11px] font-extrabold shrink-0">${tag[0]}</span></button>`; };
+            el.innerHTML = panelCard(panelHead('fa-hourglass-half', 'bg-amber-50 text-amber-600', 'Batas Verifikasi Izin (2×24 Jam)', `${pend.length} pengajuan menunggu`) +
+                (pend.length ? `<div class="divide-y divide-gray-100">${pend.slice(0, 10).map(row).join('')}</div>` : emptyBox('fa-circle-check', 'Tidak ada pengajuan izin yang menunggu.')) +
+                '<p class="text-[10px] text-gray-400">Batas dihitung 2×24 jam sejak hari pertama tidak masuk. Pengajuan yang menunggu dianggap berizin sementara.</p>');
+        }
+
+        // ----- panel kedisiplinan -----
+        function renderMovePanel() {
+            const el = document.getElementById('panelMove'); if (!el) return;
+            const r = anRange(), mv = stageMoves(r);
+            const rowT = (lbl, arr) => `<div class="grid grid-cols-5 gap-1.5"><span class="col-span-5 text-[10px] font-bold text-gray-400 uppercase">${lbl}</span>${arr.map((n, i) => `<div class="p-2 rounded-lg text-center ${STAGES[i][1]}"><span class="block text-[9px] font-bold">${STAGES[i][0].split(' • ')[0].replace('Tahap ', 'T')}</span><span class="font-black">${n}</span></div>`).join('')}</div>`;
+            const list = (arr, up) => arr.length ? arr.map(x => `<button onclick="openActionManager(${x.st.id})" class="w-full flex items-center justify-between py-2 text-left text-xs"><span class="font-bold text-santara-navy truncate pr-2">${x.st.name}</span><span class="font-bold ${up ? 'text-red-600' : 'text-green-600'} shrink-0">${up ? '▲' : '▼'} ${STAGES[x.b.stage][0].split(' • ')[0]} → ${STAGES[x.a.stage][0].split(' • ')[0]}</span></button>`).join('') : '<p class="text-xs text-gray-400 py-1">Tidak ada.</p>';
+            el.innerHTML = panelCard(panelHead('fa-arrow-trend-up', 'bg-orange-50 text-orange-600', 'Perpindahan Tahap Siswa', r.label) + rowT('Awal periode', mv.before) + rowT('Akhir periode', mv.after) +
+                `<div class="grid grid-cols-2 gap-4"><div><h4 class="text-[10px] font-extrabold text-red-600 uppercase mb-1">Naik tahap (${mv.up.length})</h4><div class="divide-y divide-gray-100">${list(mv.up, true)}</div></div><div><h4 class="text-[10px] font-extrabold text-green-600 uppercase mb-1">Turun tahap (${mv.down.length})</h4><div class="divide-y divide-gray-100">${list(mv.down, false)}</div></div></div>`);
+        }
+        function openComposeDetail(g) {
+            const r = anRange();
+            if (g === 'Kehadiran') { const rs = validRecords().filter(x => x.date >= r.from && x.date <= r.to && (x.status === 'TERLAMBAT' || x.status === 'ALFA')); openAttendanceDetail('Terlambat & Alfa • ' + r.label, rs); return; }
+            openListModal(g + ' • ' + r.label, null, periodMetrics(r.from, r.to).vios.filter(v => composeGroup(v) === g).map(violationRowHtml).join(''));
+        }
+        function composeGroup(v) { const rl = ruleById(v.ruleId); return rl ? (rl.article === 'Kehadiran' ? 'Kehadiran' : rl.article) : (v.category === 'Berat' ? 'Berat' : v.category === 'Sedang' ? 'Sedang' : 'Ringan'); }
+        function renderComposePanel() {
+            const el = document.getElementById('panelCompose'); if (!el) return;
+            const r = anRange(), m = periodMetrics(r.from, r.to), g = { Kehadiran: m.c.TERLAMBAT * ruleW('TERLAMBAT', 1) + m.c.ALFA * ruleW('ALFA', 2), Ringan: 0, Sedang: 0, Berat: 0, Kritis: 0 };
+            m.vios.forEach(v => { g[composeGroup(v)] = (g[composeGroup(v)] || 0) + (v.pts || 0); });
+            const tot = Object.values(g).reduce((n, x) => n + x, 0), col = { Kehadiran: '#3b82f6', Ringan: '#22c55e', Sedang: '#eab308', Berat: '#f97316', Kritis: '#dc2626' };
+            el.innerHTML = panelCard(panelHead('fa-chart-simple', 'bg-blue-50 text-blue-600', 'Komposisi Poin per Pasal', `${tot} poin • ${r.label}`) +
+                (tot ? `<div class="h-4 rounded-full overflow-hidden flex">${Object.keys(g).filter(k => g[k]).map(k => `<div style="width:${g[k] * 100 / tot}%;background:${col[k]}" title="${k}"></div>`).join('')}</div>` +
+                    `<div class="space-y-1">${Object.keys(g).map(k => `<button onclick="openComposeDetail('${k}')" class="w-full flex items-center justify-between py-1.5 text-xs text-left"><span class="flex items-center gap-2"><span class="w-3 h-3 rounded-full" style="background:${col[k]}"></span><span class="font-semibold text-santara-navy">${k}</span></span><span class="font-bold text-gray-600">${g[k]} poin <span class="text-gray-400">(${round1(g[k] * 100 / tot)}%)</span></span></button>`).join('')}</div>` : emptyBox('fa-chart-simple', 'Belum ada poin pada periode ini.')) +
+                '<p class="text-[10px] text-gray-400">Kehadiran = terlambat + Alfa. Pelanggaran dikelompokkan menurut pasal pada katalog aturan.</p>');
+        }
+        function openCauseDetail(key) {
+            const r = anRange();
+            if (key === '__late' || key === '__alfa') { openAttendanceDetail((key === '__late' ? 'Terlambat' : 'Alfa') + ' • ' + r.label, validRecords().filter(x => x.date >= r.from && x.date <= r.to && x.status === (key === '__late' ? 'TERLAMBAT' : 'ALFA'))); return; }
+            openListModal('Penyebab • ' + r.label, null, periodMetrics(r.from, r.to).vios.filter(v => normKey(v.violation) === key).map(violationRowHtml).join(''));
+        }
+        function renderParetoPanel() {
+            const el = document.getElementById('panelPareto'); if (!el) return;
+            destroyChart('pareto');
+            const r = anRange(), cs = causeStats(r).slice(0, 8), head = panelHead('fa-chart-column', 'bg-red-50 text-red-600', 'Pareto Penyebab Poin', r.label);
+            if (!cs.length) { el.innerHTML = panelCard(head + emptyBox('fa-chart-column', 'Belum ada poin pada periode ini.')); return; }
+            if (!chartsReady()) { el.innerHTML = panelCard(head + emptyBox('fa-plug-circle-exclamation', 'Pustaka grafik gagal dimuat.')); return; }
+            const tot = cs.reduce((n, x) => n + x.pts, 0); let acc = 0; const cum = cs.map(x => { acc += x.pts; return round1(acc * 100 / tot); });
+            el.innerHTML = panelCard(head + '<div class="relative h-72"><canvas id="paretoChart"></canvas></div><p class="text-[10px] text-gray-400">Batang = poin per penyebab (8 teratas), garis = persentase kumulatif. Klik batang untuk rincian.</p>');
+            const trunc = s => String(s).length > 18 ? String(s).slice(0, 17) + '…' : s;
+            charts.pareto = new Chart(document.getElementById('paretoChart'), { type: 'bar', data: { labels: cs.map(x => trunc(unesc(x.label))), datasets: [{ type: 'bar', label: 'Poin', data: cs.map(x => x.pts), backgroundColor: '#ef4444', borderRadius: 4, yAxisID: 'y', order: 2 }, { type: 'line', label: '% kumulatif', data: cum, borderColor: '#1e3a8a', backgroundColor: '#1e3a8a', tension: .25, pointRadius: 4, yAxisID: 'y1', order: 1 }] },
+                options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { position: 'bottom', labels: { usePointStyle: true } }, tooltip: { callbacks: { title: i => unesc(cs[i[0].dataIndex].label), footer: i => `${cs[i[0].dataIndex].n} kasus` } } },
+                    scales: { y: { beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: 'Poin' } }, y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, ticks: { callback: v => v + '%' } } },
+                    onClick: (e, els, ch) => { const h = ch.getElementsAtEventForMode(e.native || e, 'nearest', { intersect: true }, true)[0]; if (h) openCauseDetail(cs[h.index].key); } } });
+        }
+        function renderNearPanel() {
+            const el = document.getElementById('panelNear'); if (!el) return;
+            const list = nearThreshold();
+            el.innerHTML = panelCard(panelHead('fa-bullseye', 'bg-amber-50 text-amber-600', 'Mendekati Ambang Berikutnya', 'Selisih ≤ 10 poin dari tahap berikutnya') +
+                (list.length ? `<div class="divide-y divide-gray-100">${list.map(x => `<button onclick="openActionManager(${x.st.id})" class="w-full flex items-center justify-between py-2.5 gap-3 text-left"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${x.st.name}</span><span class="block text-[10px] text-gray-400">${x.d.total} poin • ${x.gap} poin lagi ke ${x.next}</span></span><span class="text-[10px] font-bold ${x.eta ? 'text-amber-700' : 'text-gray-400'} shrink-0">${x.eta ? 'perkiraan ' + fmtDate(x.eta) : 'laju 30 hari: 0'}</span></button>`).join('')}</div>` : emptyBox('fa-circle-check', 'Tidak ada siswa yang mendekati ambang tahap berikutnya.')) +
+                '<p class="text-[10px] text-gray-400">Perkiraan tanggal memakai laju penambahan poin 30 hari terakhir. Ini perkiraan, bukan kepastian.</p>');
+        }
+        function renderRepeatPanel() {
+            const el = document.getElementById('panelRepeat'); if (!el) return;
+            const r = anRange(), by = {};
+            periodMetrics(r.from, r.to).vios.forEach(v => { const x = by[v.nis] || (by[v.nis] = { n: 0, types: {} }); x.n++; const k = normKey(v.violation); (x.types[k] || (x.types[k] = { label: v.violation, n: 0 })).n++; });
+            const list = Object.keys(by).map(nis => { const x = by[nis], top = Object.values(x.types).sort((a, b) => b.n - a.n)[0]; return { st: studentByNis(nis), n: x.n, top }; }).filter(x => x.st && (x.n >= 3 || x.top.n >= 2)).sort((a, b) => b.n - a.n);
+            el.innerHTML = panelCard(panelHead('fa-repeat', 'bg-purple-50 text-purple-600', 'Pelanggar Berulang', `${list.length} siswa • ${r.label}`) +
+                (list.length ? `<div class="divide-y divide-gray-100">${list.slice(0, 10).map(x => `<button onclick="openStudentFromModal(${x.st.id})" class="w-full flex items-center justify-between py-2.5 gap-3 text-left"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${x.st.name}</span><span class="block text-[10px] text-gray-400 truncate">Terbanyak: ${x.top.label} (${x.top.n}x)</span></span><span class="px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 text-[11px] font-extrabold shrink-0">${x.n} kasus</span></button>`).join('')}</div>` : emptyBox('fa-circle-check', 'Tidak ada pelanggar berulang pada periode ini.')) +
+                '<p class="text-[10px] text-gray-400">Kriteria: minimal 3 pelanggaran, atau jenis yang sama minimal 2 kali. Terjadi dalam periode terpilih.</p>');
+        }
+
+        // ----- panel pembinaan -----
+        function renderProcPanel() {
+            const el = document.getElementById('panelProc'); if (!el) return;
+            const rows = activeStudents().map(st => ({ st, req: requiredActions(st), d: computeDiscipline(st) })).filter(x => x.req.length);
+            const need = rows.reduce((n, x) => n + x.req.length, 0), done = rows.reduce((n, x) => n + x.req.filter(a => a.done).length, 0);
+            const late = rows.filter(x => x.d.stage >= 2 && x.req.some(a => !a.done && (a.code.startsWith('SP') || a.code.startsWith('PANGGIL')))).sort((a, b) => b.d.stage - a.d.stage);
+            el.innerHTML = panelCard(panelHead('fa-clipboard-check', 'bg-blue-50 text-blue-600', 'Kepatuhan Prosedur Disiplin', `${rows.length} siswa memiliki tindakan wajib`) +
+                (need ? `<div><div class="flex justify-between text-xs mb-1"><span class="font-semibold text-gray-600">Tindakan wajib terlaksana</span><span class="font-black text-santara-navy">${done} / ${need} (${Math.round(done * 100 / need)}%)</span></div><div class="h-3 bg-gray-100 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-santara-teal to-santara-blue" style="width:${Math.round(done * 100 / need)}%"></div></div></div>` : emptyBox('fa-circle-check', 'Belum ada tindakan wajib (semua siswa Aman).')) +
+                (late.length ? `<div><h4 class="text-[10px] font-extrabold text-red-600 uppercase mb-1">SP/panggilan orang tua belum terlaksana (${late.length})</h4><div class="divide-y divide-gray-100">${late.slice(0, 8).map(x => `<button onclick="openActionManager(${x.st.id})" class="w-full flex items-center justify-between py-2 text-left text-xs"><span class="font-bold text-santara-navy truncate pr-2">${x.st.name}</span><span class="text-red-600 font-bold shrink-0">${STAGES[x.d.stage][0].split(' • ')[0]} • ${x.req.filter(a => !a.done).length} menunggu</span></button>`).join('')}</div></div>` : ''));
+        }
+        function renderEffectPanel() {
+            const el = document.getElementById('panelEffect'); if (!el) return;
+            const r = anRange(), s = interventionStats(r), med = a => { if (!a.length) return null; const b = a.slice().sort((x, y) => x - y), m = Math.floor(b.length / 2); return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+            const enough = (n) => n >= 5;
+            const delay = s.delays.length ? `${round1(s.delays.reduce((n, x) => n + x, 0) / s.delays.length)} hari (median ${round1(med(s.delays))}) dari ${s.delays.length} tindak lanjut` : 'belum ada data';
+            const ba = enough(s.n) ? `<div class="grid grid-cols-3 gap-2 text-center"><div class="p-3 rounded-xl bg-red-50"><span class="block text-[10px] font-bold text-red-700 uppercase">30 hari sebelum</span><span class="text-xl font-black text-red-700">${s.before}</span></div><div class="p-3 rounded-xl bg-green-50"><span class="block text-[10px] font-bold text-green-700 uppercase">30 hari sesudah</span><span class="text-xl font-black text-green-700">${s.after}</span></div><div class="p-3 rounded-xl bg-blue-50"><span class="block text-[10px] font-bold text-blue-700 uppercase">Membaik</span><span class="text-xl font-black text-blue-700">${Math.round(s.dec * 100 / s.n)}%</span></div></div>` : `<p class="text-xs text-gray-400">Data belum cukup (n = ${s.n}, minimal 5 tindak lanjut yang sudah lewat 30 hari).</p>`;
+            el.innerHTML = panelCard(panelHead('fa-chart-line', 'bg-green-50 text-green-600', 'Efektivitas Pembinaan', r.label) +
+                `<div><h4 class="text-[10px] font-extrabold text-santara-textSec uppercase mb-1">Waktu dari kejadian pemicu hingga tindak lanjut</h4><p class="text-sm font-black text-santara-navy">${delay}</p></div>` +
+                `<div><h4 class="text-[10px] font-extrabold text-santara-textSec uppercase mb-1">Poin kejadian: sebelum vs sesudah tindak lanjut</h4>${ba}</div>` +
+                `<div><h4 class="text-[10px] font-extrabold text-santara-textSec uppercase mb-1">Tingkat kambuh (kejadian baru dalam 30 hari setelah tindak lanjut)</h4><p class="text-sm font-black text-santara-navy">${enough(s.recN) ? Math.round(s.rec * 100 / s.recN) + '% (' + s.rec + ' dari ' + s.recN + ')' : 'Data belum cukup (n = ' + s.recN + ', minimal 5)'}</p></div>` +
+                '<p class="text-[10px] text-gray-400">Hanya tindak lanjut yang sudah lewat 30 hari yang dibandingkan. Hasil dengan sampel kecil tidak ditampilkan agar tidak menyesatkan.</p>');
+        }
+
+        // ----- laporan -----
+        function renderReportTab(body, r) {
+            const m = { cur: periodMetrics(r.from, r.to), prev: periodMetrics(r.prevFrom, r.prevTo) }, ix = classIndex(m.cur), mv = stageMoves(r), cs = causeStats(r).slice(0, 5);
+            const row = (lbl, a, b, goodUp, unit) => { const d = (a == null || b == null) ? null : round1(a - b); return `<tr class="border-b"><td class="p-2.5 font-semibold text-santara-navy">${lbl}</td><td class="p-2.5 text-center font-bold">${a == null ? '-' : a + (unit || '')}</td><td class="p-2.5 text-center text-gray-500">${b == null ? '-' : b + (unit || '')}</td><td class="p-2.5 text-center font-bold ${d == null || !d ? 'text-gray-400' : (goodUp ? d > 0 : d < 0) ? 'text-green-600' : 'text-red-600'}">${d == null ? '-' : d === 0 ? '=' : (d > 0 ? '▲ ' : '▼ ') + Math.abs(d)}</td></tr>`; };
+            const c = m.cur, p = m.prev, watch = activeStudents().map(st => ({ st, d: computeDiscipline(st) })).filter(x => x.d.stage >= 1).sort((a, b) => b.d.stage - a.d.stage || b.d.total - a.d.total);
+            body.innerHTML = `<div class="space-y-6">
+                <div class="no-print flex justify-end"><button onclick="window.print()" class="px-5 py-3 bg-santara-navy text-white rounded-2xl text-xs font-bold shadow-md"><i class="fa-solid fa-print mr-1.5"></i>Cetak Laporan (A4)</button></div>
+                ${panelCard(panelHead('fa-gauge-high', 'bg-teal-50 text-santara-teal', 'Ringkasan Kondisi Kelas', r.label) + `<p class="text-sm font-semibold text-santara-navy">Indeks Kondisi Kelas: <span class="font-black text-xl" style="color:${ix ? ix.band[1] : '#9ca3af'}">${ix && ix.idx != null ? ix.idx : '-'}</span> ${ix && ix.idx != null ? '(' + ix.band[0] + ')' : ''}</p>` + `<ul class="space-y-1.5 list-disc pl-5 text-xs text-gray-700 leading-relaxed">${buildNarrative(r, m).map(x => `<li>${x}</li>`).join('')}</ul>`, 'break-inside-avoid')}
+                ${panelCard(panelHead('fa-table', 'bg-blue-50 text-blue-600', 'Perbandingan dengan Periode Sebelumnya', `${fmtDate(r.prevFrom)} – ${fmtDate(r.prevTo)}`) + `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="text-[10px] uppercase text-gray-400"><th class="p-2.5 text-left">Indikator</th><th class="p-2.5">Periode ini</th><th class="p-2.5">Sebelumnya</th><th class="p-2.5">Selisih</th></tr></thead><tbody>
+                    ${row('Tingkat kehadiran', c.attPct, p.attPct, true, '%')}${row('Keterlambatan', c.latePct, p.latePct, false, '%')}${row('Hari Alfa', c.alfa, p.alfa, false)}${row('Jumlah pelanggaran', c.vios.length, p.vios.length, false)}${row('Poin baru', c.pts, p.pts, false)}${row('Pembinaan dicatat', c.ivs, p.ivs, true)}</tbody></table></div>`, 'break-inside-avoid')}
+                ${panelCard(panelHead('fa-ranking-star', 'bg-red-50 text-red-600', 'Lima Penyebab Poin Terbanyak', r.label) + (cs.length ? `<table class="w-full text-xs"><tbody>${cs.map((x, i) => `<tr class="border-b"><td class="p-2 w-8 font-black text-gray-400">${i + 1}</td><td class="p-2 font-semibold text-santara-navy">${x.label}</td><td class="p-2 text-right text-gray-600">${x.n} kasus</td><td class="p-2 text-right font-black">${x.pts} poin</td></tr>`).join('')}</tbody></table>` : '<p class="text-xs text-gray-400">Belum ada poin pada periode ini.</p>'), 'break-inside-avoid')}
+                ${panelCard(panelHead('fa-users-viewfinder', 'bg-orange-50 text-orange-600', 'Siswa dalam Pengawasan (Tahap I ke atas)', `${watch.length} siswa • naik tahap ${mv.up.length} • turun tahap ${mv.down.length}`) + (watch.length ? `<table class="w-full text-xs"><thead><tr class="text-[10px] uppercase text-gray-400"><th class="p-2 text-left">Nama</th><th class="p-2">Tahap</th><th class="p-2">Poin</th><th class="p-2">Alfa</th><th class="p-2">Tindakan</th></tr></thead><tbody>${watch.map(x => { const rq = requiredActions(x.st); return `<tr class="border-b"><td class="p-2 font-semibold text-santara-navy">${x.st.name}</td><td class="p-2 text-center">${STAGES[x.d.stage][0].split(' • ')[0]}</td><td class="p-2 text-center font-bold">${x.d.total}</td><td class="p-2 text-center">${x.d.alfa}/${x.d.limit}</td><td class="p-2 text-center">${rq.filter(a => a.done).length}/${rq.length}</td></tr>`; }).join('')}</tbody></table>` : '<p class="text-xs text-gray-400">Tidak ada siswa di Tahap I atau lebih.</p>'))}
+                <p class="text-[10px] text-gray-400">Seluruh angka berasal dari data absensi, pelanggaran, dan pembinaan di database SANTARA. Persentase kehadiran = (Hadir + Terlambat) ÷ total catatan hari sekolah.</p></div>`;
         }
 
         // ---------- Tahap B: tindakan wajib per tahap, pemutihan poin, skorsing ----------
@@ -1852,6 +2246,7 @@
                     <a href="#" onclick="renderView('homeVisit')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'homeVisit' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-house-chimney-user w-5"></i><span>Home Visit & Dokumen</span></a>
 
                     <div class="text-[10px] uppercase tracking-wider text-teal-300 font-bold px-3 pt-3 pb-1">PENCARIAN & LAPORAN</div>
+                    <a href="#" onclick="renderView('analytics')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'analytics' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-chart-line w-5"></i><span>Analitik Kondisi Kelas</span></a>
                     <a href="#" onclick="renderView('cariCetakIndiv')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'cariCetakIndiv' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-id-card-clip w-5"></i><span>Cari & Cetak Data Individu</span></a>
                     <a href="#" onclick="renderView('reports')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'reports' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-print w-5"></i><span>Pusat Laporan A4</span></a>
                     <a href="#" onclick="renderView('settings')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === 'settings' ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid fa-gear w-5"></i><span>Pengaturan Akun & Sekolah</span></a>
@@ -1875,6 +2270,7 @@
                     <button onclick="renderView('violations'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-triangle-exclamation mr-2 text-santara-teal"></i>Pelanggaran</button>
                     <button onclick="renderView('homeVisit'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-house-chimney-user mr-2 text-santara-teal"></i>Home Visit</button>
                     <button onclick="renderView('cariCetakIndiv'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-id-card-clip mr-2 text-santara-teal"></i>Cetak Individu</button>
+                    <button onclick="renderView('analytics'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-chart-line mr-2 text-santara-teal"></i>Analitik Kelas</button>
                     <button onclick="renderView('reports'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-print mr-2 text-santara-teal"></i>Pusat Laporan</button>
                     <button onclick="renderView('settings'); toggleMobileDrawer();" class="p-3 bg-gray-50 rounded-2xl text-left border font-bold text-santara-navy"><i class="fa-solid fa-gear mr-2 text-santara-teal"></i>Pengaturan Akun</button>
                 `;
@@ -1948,7 +2344,8 @@
                 scanQR: 'Kamera Pemindai QR Absensi HUD',
                 myPermission: 'Pengajuan Surat Izin / Sakit Mandiri',
                 officerQRView: 'Panel Relai QR Dinamis — Petugas Pos',
-                settings: 'Pengaturan Identitas Sekolah & Akun Wali Kelas'
+                settings: 'Pengaturan Identitas Sekolah & Akun Wali Kelas',
+                analytics: 'Analitik Kondisi Kelas'
             };
             document.getElementById('pageTitle').innerText = titles[route] || 'SANTARA Sistem';
 
@@ -1968,6 +2365,7 @@
             else if (route === 'myPermission') renderStudentPermissionForm(area);
             else if (route === 'officerQRView') renderOfficerQRView(area);
             else if (route === 'settings') renderSettingsView(area);
+            else if (route === 'analytics') renderAnalyticsPage(area);
         }
 
         function renderWaliDashboard(container) {
@@ -2036,7 +2434,7 @@
             renderHolidayBanner();
             renderAlertCenter();
             renderDisciplineBoxes();
-            renderAnalytics();
+            renderDashIndex();
         }
 
 async function sendAlfaLateRecap() {
