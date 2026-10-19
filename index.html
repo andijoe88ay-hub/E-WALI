@@ -342,6 +342,8 @@
             if (/BUKAN_PETUGAS/.test(m)) return 'Anda belum ditugaskan sebagai Petugas QR.';
             if (/PASSWORD_PENDEK/.test(m)) return 'Password minimal 6 karakter.';
             if (/ALASAN_KOSONG/.test(m)) return 'Alasan wajib diisi.';
+            if (/IZIN_TERLAMBAT/.test(m)) return 'Batas pengajuan izin/sakit (2x24 jam) sudah terlewat. Hubungi Wali Kelas untuk koreksi.';
+            if (/alfa_cutoff/.test(m)) return 'Fitur batas jam belum aktif. Jalankan santara_supabase_v11_batas_jam_alfa.sql di Supabase.';
             if (/SKORSING/.test(m)) return 'Anda sedang dalam masa skorsing, absensi QR dinonaktifkan.';
             if (/PEMUTIHAN_PENUH/.test(m)) return 'Anda masih memiliki 3 pengajuan pemutihan yang menunggu verifikasi.';
             if (/KIND_INVALID/.test(m)) return 'Jenis pemutihan tidak valid.';
@@ -427,7 +429,7 @@
             mockState.remissions = res[10].data.map(x => ({ id: x.id, sid: x.student_id, kind: x.kind, points: x.points, status: x.status, ref: x.ref, note: esc(x.note || ''), year: x.school_year, createdAt: x.created_at }));
             mockState.suspensions = res[11].data.map(x => ({ id: x.id, sid: x.student_id, start: x.start_date, end: x.end_date, note: esc(x.note || '') }));
             mockState.letters = res[12].data.map(x => ({ id: x.id, sid: x.student_id, code: x.code, number: x.number, seq: x.seq, year: x.school_year, date: x.issued_date, payload: x.payload, createdAt: x.created_at }));
-            mockState.autoAlfaStart = prof.auto_alfa_start || '';
+            mockState.autoAlfaStart = prof.auto_alfa_start || ''; mockState.alfaCutoff = prof.alfa_cutoff || '09:00';
             const attSet = new Set(res[2].data.map(a => a.student_id + '|' + a.att_date));
             const derived = buildDerivedAlfa(res[1].data.filter(r => r.is_active).map(r => ({ id: r.id, created: jktDate(r.created_at) })), attSet,
                 res[6].data.map(p => ({ sid: p.student_id, date: p.perm_date, status: p.status })));
@@ -1940,20 +1942,24 @@
 
         // ---------- Alfa otomatis, pencegahan dini kehadiran, koreksi absensi ----------
         function jktDate(ts) { return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }); }
-        // Hari sekolah tanpa catatan absensi dan tanpa izin (belum ditolak) = Alfa setelah 2x24 jam, mulai tanggal yang ditetapkan wali.
+        function nowHM() { return new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' }); }
+        function isDerivedAlfaToday(sid) { const t = todayISO(); return (mockState.attendanceRows || []).some(a => a.sid === sid && a.date === t && a.derived); }
+        // Siswa yang belum absen dan tidak berizin (belum ditolak) hingga batas jam dianggap Alfa pada hari itu; hari lampau langsung Alfa.
+        // Dihitung dinamis: otomatis hilang bila siswa scan (menjadi Terlambat), berizin, atau dikoreksi wali.
         function buildDerivedAlfa(studs, attSet, perms) {
             const start = mockState.autoAlfaStart;
             if (!start) return [];
-            const cutoff = dateAddDays(todayISO(), -2);
-            if (cutoff < start) return [];
+            const cut = mockState.alfaCutoff || '09:00', today = todayISO();
+            const last = nowHM() >= cut ? today : dateAddDays(today, -1);
+            if (last < start) return [];
             const excused = new Set(perms.filter(p => p.status !== 'REJECTED').map(p => p.sid + '|' + p.date));
             const out = [];
             studs.forEach(st => {
-                for (let d = start > st.created ? start : st.created; d <= cutoff; d = dateAddDays(d, 1)) {
+                for (let d = start > st.created ? start : st.created; d <= last; d = dateAddDays(d, 1)) {
                     if (!isSchoolDay(d) || isSuspended(st.id, d)) continue;
                     const k = st.id + '|' + d;
                     if (attSet.has(k) || excused.has(k)) continue;
-                    out.push({ sid: st.id, date: d, createdAt: dateAddDays(d, 2) + 'T00:00:00+07:00' });
+                    out.push({ sid: st.id, date: d, createdAt: `${d}T${cut}:00+07:00` });
                 }
             });
             return out;
@@ -1971,20 +1977,24 @@
             return 'Kritis: buat surat pernyataan tertulis dan libatkan Kepala Sekolah/BK.';
         }
         function autoAlfaNoticeHtml() {
-            const st = mockState.autoAlfaStart;
+            const st = mockState.autoAlfaStart, cut = mockState.alfaCutoff || '09:00';
             return st
-                ? `<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-900 font-semibold"><span><i class="fa-solid fa-robot mr-1.5"></i>Alfa otomatis aktif sejak ${fmtDate(st)}. Hari sekolah tanpa absen atau izin menjadi Alfa setelah 2x24 jam.</span><button onclick="openAutoAlfaSettings()" class="px-3 py-1.5 bg-white border border-blue-200 rounded-lg font-bold">Atur</button></div>`
+                ? `<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-900 font-semibold"><span><i class="fa-solid fa-robot mr-1.5"></i>Alfa otomatis aktif sejak ${fmtDate(st)}. Siswa yang belum absen dan tidak berizin hingga pukul ${cut} WIB tercatat Alfa pada hari itu.</span><button onclick="openAutoAlfaSettings()" class="px-3 py-1.5 bg-white border border-blue-200 rounded-lg font-bold">Atur</button></div>`
                 : `<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 font-semibold"><span><i class="fa-solid fa-robot mr-1.5"></i>Alfa otomatis belum aktif, jadi alert Alfa 3x hanya terisi jika Alfa ditandai manual.</span><button onclick="openAutoAlfaSettings()" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold">Aktifkan</button></div>`;
         }
         function openAutoAlfaSettings() {
             const modal = document.getElementById('modalContainer'); const box = document.getElementById('modalContentBox');
             box.innerHTML = `
-                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Alfa Otomatis</h3>
+                <div class="bg-santara-navy text-white p-4 flex items-center justify-between"><h3 class="font-bold text-sm">Alfa Otomatis & Batas Jam Absensi</h3>
                     <button onclick="closeModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-xmark text-lg"></i></button></div>
                 <div class="p-6 space-y-4 text-xs flex-1 min-h-0 overflow-y-auto">
-                    <div class="p-3 bg-sky-50 border border-sky-200 rounded-xl text-sky-900 font-semibold leading-relaxed">Hari sekolah tanpa scan, tanpa catatan absensi, dan tanpa pengajuan izin/sakit (yang belum ditolak) otomatis dihitung Alfa setelah 2x24 jam. Hari libur tidak dihitung. Jika siswa sebenarnya hadir, gunakan tombol Koreksi pada Tanggal Alfa. Hanya tanggal sejak mulai pemantauan yang dihitung, agar hari sebelum kelas memakai scan tidak menjadi Alfa.</div>
+                    <div class="p-3 bg-sky-50 border border-sky-200 rounded-xl text-sky-900 font-semibold leading-relaxed">Pada hari sekolah, siswa yang <b>belum scan dan tidak berizin hingga batas jam</b> langsung tercatat Alfa, sehingga analisis kehadiran hari itu langsung lengkap. Status ini otomatis berubah jika siswa kemudian scan (menjadi Terlambat), pengajuan izin/sakit masuk, atau Anda mengoreksinya. Izin/sakit dapat diajukan paling lama 2x24 jam setelah tanggal tidak masuk. Hari libur tidak dihitung.</div>
+                    <div><label class="block font-bold mb-1">BATAS JAM ABSENSI (WIB)</label>
+                        <input type="time" id="aaCutoff" value="${mockState.alfaCutoff || '09:00'}" class="w-full p-3 border rounded-xl">
+                        <p class="text-[10px] text-gray-400 mt-1">Harus lebih lambat dari batas terlambat QR (${mockState.qrSettings.toleranceTime}). Disarankan 1–2 jam sesudahnya.</p></div>
                     <div><label class="block font-bold mb-1">MULAI PEMANTAUAN ALFA OTOMATIS</label>
-                        <input type="date" id="aaStart" value="${mockState.autoAlfaStart || todayISO()}" class="w-full p-3 border rounded-xl"></div>
+                        <input type="date" id="aaStart" value="${mockState.autoAlfaStart || todayISO()}" class="w-full p-3 border rounded-xl">
+                        <p class="text-[10px] text-gray-400 mt-1">Hanya tanggal sejak hari ini dan seterusnya yang dihitung, agar hari sebelum kelas memakai scan tidak menjadi Alfa.</p></div>
                     <div class="grid grid-cols-2 gap-3">
                         <button onclick="saveAutoAlfa(false)" class="py-3 bg-white border border-red-200 text-red-600 font-bold rounded-xl">Nonaktifkan</button>
                         <button onclick="saveAutoAlfa(true)" class="py-3 bg-santara-teal text-white font-bold rounded-xl shadow-md">Simpan</button>
@@ -1994,11 +2004,47 @@
         }
         function saveAutoAlfa(on) {
             if (needSb()) return;
-            const v = on ? ((document.getElementById('aaStart') || {}).value || '') : '';
+            const v = on ? ((document.getElementById('aaStart') || {}).value || '') : '', cut = (document.getElementById('aaCutoff') || {}).value || '09:00';
             if (on && !v) { showToast('Peringatan', 'Tanggal mulai wajib diisi.'); return; }
-            run(async () => { const { error } = await sb.from('profiles').update({ auto_alfa_start: v || null }).eq('id', mockState.uid); if (error) throw error; closeModal(); },
-                ['Tersimpan', on ? 'Alfa otomatis diaktifkan.' : 'Alfa otomatis dinonaktifkan.'], 'dashboard');
+            if (on && cut <= (mockState.qrSettings.toleranceTime || '07:15')) { showToast('Peringatan', 'Batas jam absensi harus lebih lambat dari batas terlambat QR (' + mockState.qrSettings.toleranceTime + ').'); return; }
+            const upd = on ? { auto_alfa_start: v, alfa_cutoff: cut } : { auto_alfa_start: null };
+            run(async () => { const { error } = await sb.from('profiles').update(upd).eq('id', mockState.uid); if (error) throw error; closeModal(); },
+                ['Tersimpan', on ? `Alfa otomatis aktif, batas jam ${cut} WIB.` : 'Alfa otomatis dinonaktifkan.'], 'dashboard');
         }
+        // ----- analisis kehadiran hari ini -----
+        function renderTodayBox() {
+            const box = document.getElementById('todayBox'); if (!box) return;
+            const t = todayISO(), act = activeStudents();
+            if (!isSchoolDay(t) || !act.length) { box.innerHTML = ''; return; }
+            const cnt = { HADIR: 0, TERLAMBAT: 0, SAKIT: 0, IZIN: 0, ALFA: 0, BELUM: 0 };
+            act.forEach(s => { cnt[cnt[s.status] != null ? s.status : 'BELUM']++; });
+            const cut = mockState.alfaCutoff || '09:00', auto = !!mockState.autoAlfaStart, passed = nowHM() >= cut;
+            const [ch, cm] = cut.split(':').map(Number), [nh, nm] = nowHM().split(':').map(Number), left = ch * 60 + cm - (nh * 60 + nm);
+            const info = !auto ? 'Alfa otomatis belum aktif' : passed ? `Batas jam ${cut} WIB terlewati: yang belum absen tercatat Alfa` : `Batas jam ${cut} WIB • ${left >= 60 ? Math.floor(left / 60) + ' jam ' : ''}${left % 60} menit lagi`;
+            const col = { HADIR: '#22c55e', TERLAMBAT: '#eab308', SAKIT: '#3b82f6', IZIN: '#a855f7', ALFA: '#ef4444', BELUM: '#cbd5e1' }, lbl = { HADIR: 'Hadir', TERLAMBAT: 'Terlambat', SAKIT: 'Sakit', IZIN: 'Izin', ALFA: 'Alfa', BELUM: 'Belum scan' };
+            const open = cnt.BELUM + cnt.ALFA, n = act.length;
+            box.innerHTML = panelCard(panelHead('fa-calendar-day', 'bg-blue-50 text-blue-600', 'Kehadiran Hari Ini', `${tglPanjang()} • ${info}`, open ? `<button onclick="openNotYetList()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-santara-navy text-white">Belum absen / Alfa (${open})</button>` : '') +
+                `<div class="h-3 rounded-full overflow-hidden flex bg-gray-100">${Object.keys(cnt).filter(k => cnt[k]).map(k => `<div style="width:${cnt[k] * 100 / n}%;background:${col[k]}" title="${lbl[k]} ${cnt[k]}"></div>`).join('')}</div>` +
+                `<div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-semibold text-gray-600">${Object.keys(cnt).map(k => `<span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full" style="background:${col[k]}"></span>${lbl[k]} ${cnt[k]} <span class="text-gray-400">(${round1(cnt[k] * 100 / n)}%)</span></span>`).join('')}</div>`);
+        }
+        function openNotYetList() {
+            const t = todayISO(), list = activeStudents().filter(s => s.status === 'BELUM' || isDerivedAlfaToday(s.id));
+            openListModal('Belum Absen Hari Ini', `${list.length} siswa • Gunakan Koreksi jika siswa sebenarnya hadir atau berizin`, list.map(s => { const der = isDerivedAlfaToday(s.id);
+                return `<div class="flex items-center justify-between py-2.5 gap-2"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${s.name}</span><span class="block text-[10px] ${der ? 'text-red-600' : 'text-amber-600'} font-semibold">${der ? 'Alfa (melewati batas jam)' : 'Belum scan'}</span></span>
+                    <span class="flex gap-1.5 shrink-0"><button onclick="nudgeParentWa(${s.id})" class="px-2.5 py-1.5 bg-green-600 text-white rounded-lg text-[11px] font-bold" aria-label="WhatsApp orang tua"><i class="fa-brands fa-whatsapp"></i></button><button onclick="openAttendanceFix(${s.id}, '${t}')" class="px-2.5 py-1.5 bg-white border border-santara-border rounded-lg text-[11px] font-bold text-santara-navy">Koreksi</button></span></div>`; }).join(''));
+        }
+        function nudgeParentWa(id) {
+            const st = studentById(id); if (!st) return;
+            const sc = mockState.schoolConfig, msg = `Assalamualaikum Wr. Wb. Bapak/Ibu ${unesc(st.parent)},\n\nKami informasikan bahwa ananda *${unesc(st.name)}* (kelas ${unesc(sc.className)}) belum tercatat hadir hari ini (${tglPanjang()}) hingga pukul ${nowHM()} WIB. Mohon konfirmasi kondisi/keberadaan ananda.\n\nApabila ananda berhalangan hadir, mohon pengajuan izin/sakit disampaikan paling lambat 2x24 jam. Terima kasih.\n_Wali Kelas ${unesc(sc.teacherName)}_`;
+            const num = waNum(st.parentPhone);
+            openWaModal('Konfirmasi ke Orang Tua', msg, `https://wa.me/${num}?text=${encodeURIComponent(msg)}`, num ? '' : '<div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 font-semibold">Nomor WhatsApp orang tua belum diisi.</div>');
+        }
+        function studentAlfaTodayBannerHtml(user) {
+            if (!isDerivedAlfaToday(user.id)) return '';
+            return `<div class="rounded-3xl p-5 border-2 border-red-300 bg-red-50 flex items-center gap-4"><div class="w-12 h-12 shrink-0 rounded-2xl bg-red-600 text-white flex items-center justify-center text-xl"><i class="fa-solid fa-user-xmark"></i></div>
+                <div><h3 class="font-extrabold text-sm text-red-800 uppercase tracking-wide">Hari ini tercatat Alfa</h3><p class="text-xs text-red-900 font-medium leading-relaxed">Anda belum absen hingga batas jam ${mockState.alfaCutoff || '09:00'} WIB. Scan QR sekarang (tercatat Terlambat) atau ajukan izin/sakit paling lambat 2x24 jam setelah hari ini. Status berubah otomatis.</p></div></div>`;
+        }
+
         function openAlfaDates(sid) {
             const st = studentById(sid); if (!st) return;
             const rows = (mockState.attendanceRows || []).filter(a => a.sid === sid && a.status === 'ALFA' && isSchoolDay(a.date)).sort((a, b) => b.date.localeCompare(a.date));
@@ -2209,7 +2255,7 @@
             mockState.dActions = []; mockState.letters = [];
             mockState.remissions = (me.remissions || []).map(x => ({ id: x.id, sid: r.id, kind: x.kind, points: x.points, status: x.status, ref: x.ref, note: esc(x.note || ''), year: x.school_year, createdAt: x.created_at }));
             mockState.suspensions = (me.suspensions || []).map(x => ({ id: x.id, sid: r.id, start: x.start_date, end: x.end_date, note: esc(x.note || '') }));
-            mockState.autoAlfaStart = p.auto_alfa_start || '';
+            mockState.autoAlfaStart = p.auto_alfa_start || ''; mockState.alfaCutoff = p.alfa_cutoff || '09:00';
             const aset = new Set(me.attendance.map(a => r.id + '|' + a.att_date));
             me.attendance = me.attendance.concat(buildDerivedAlfa([{ id: r.id, created: jktDate(r.created_at) }], aset, me.permissions.map(x => ({ sid: r.id, date: x.perm_date, status: x.status })))
                 .map(d => ({ att_date: d.date, status: 'ALFA', scan_time: '-', created_at: d.createdAt, derived: true })));
@@ -2594,6 +2640,7 @@
             container.innerHTML = `
                 <div class="space-y-6">
                     <div id="holidayBanner"></div>
+                    <div id="todayBox"></div>
                     <div class="relative rounded-3xl overflow-hidden shadow-2xl text-white p-6 md:p-10 flex flex-col justify-center min-h-[220px]">
                         <div class="absolute inset-0 bg-cover bg-center filter brightness-50 scale-105 transform transition-transform duration-700" style="background-image: url('https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=1200&auto=format&fit=crop&q=80');"></div>
                         <div class="absolute inset-0 bg-gradient-to-r from-santara-navy/90 via-santara-teal/80 to-transparent"></div>
@@ -2653,6 +2700,7 @@
                 </div>
             `;
             renderHolidayBanner();
+            renderTodayBox();
             renderAlertCenter();
             renderDisciplineBoxes();
             renderDashIndex();
@@ -2750,6 +2798,7 @@ async function sendAlfaLateRecap() {
 
                     ${studentHolidayBannerHtml()}
                     ${studentSuspensionBannerHtml()}
+                    ${studentAlfaTodayBannerHtml(user)}
                     ${studentAlertBannerHtml(user)}
                     ${teladanBadgeHtml(user)}
 
@@ -3463,7 +3512,7 @@ async function sendAlfaLateRecap() {
                             </div>
                             <div>
                                 <label class="block font-bold mb-1.5 uppercase text-gray-600">TANGGAL IZIN</label>
-                                <input type="date" id="myPermDate" class="w-full p-3.5 border border-santara-border rounded-2xl font-medium bg-gray-50 focus:bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none" value="${todayISO()}">
+                                <input type="date" id="myPermDate" class="w-full p-3.5 border border-santara-border rounded-2xl font-medium bg-gray-50 focus:bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none" value="${todayISO()}" min="${dateAddDays(todayISO(), -2)}">
                             </div>
                             <div>
                                 <label class="block font-bold mb-1.5 uppercase text-gray-600">ALASAN / KETERANGAN</label>
@@ -3496,6 +3545,7 @@ async function sendAlfaLateRecap() {
             const file = (document.getElementById('myPermFile').files || [])[0];
             if (!reason) { showToast('Peringatan', 'Alasan wajib diisi.'); return; }
             if (needSb()) return;
+            if (date < dateAddDays(todayISO(), -2)) { showToast('Peringatan', 'Batas pengajuan izin/sakit (2x24 jam) sudah terlewat. Hubungi Wali Kelas.'); return; }
             if (!isSchoolDay(date)) { showToast('Hari Libur', `Tanggal tersebut libur (${unesc(dayOffReason(date))}). Izin/sakit hanya untuk hari sekolah.`); return; }
             const meP = mockState.students[0];
             if (date === todayISO() && meP && (meP.status === 'HADIR' || meP.status === 'TERLAMBAT')) { showToast('Peringatan', 'Anda sudah absen hari ini, sehingga tidak dapat mengajukan izin/sakit.'); return; }
@@ -3587,7 +3637,7 @@ async function sendAlfaLateRecap() {
             if (!isSchoolDay(todayISO())) { showToast('Hari Libur', `Hari ini libur (${unesc(dayOffReason(todayISO()))}). Absensi QR ditiadakan.`); stopCameraAndBack(); return; }
             if (mockState.permissions.some(p => p.rawDate === todayISO() && p.status !== 'REJECTED')) { showToast('Tidak Dapat Absen', 'Anda sudah mengajukan izin/sakit hari ini, sehingga tidak dapat absen QR.'); stopCameraAndBack(); return; }
             const me0 = mockState.students[0];
-            if (me0 && me0.status && me0.status !== 'BELUM') { showToast('Sudah Absen', `Anda sudah tercatat ${me0.status} hari ini (maksimal 1x per hari).`); stopCameraAndBack(); return; }
+            if (me0 && me0.status && me0.status !== 'BELUM' && !isDerivedAlfaToday(me0.id)) { showToast('Sudah Absen', `Anda sudah tercatat ${me0.status} hari ini (maksimal 1x per hari).`); stopCameraAndBack(); return; }
             const now = Date.now();
             if (lastScan.nis === code && now - lastScan.at < 4000) return;   // cegah scan ganda beruntun
             lastScan = { nis: code, at: now };
