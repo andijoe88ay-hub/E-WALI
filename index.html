@@ -60,6 +60,23 @@
             @page { size: A4 portrait; margin: 15mm; }
         }
         #letterPrintArea { display: none; }
+        :focus-visible { outline: 2px solid #0d9488; outline-offset: 2px; }
+        @media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
+        @media (max-width: 767px) {
+            table.mcards { min-width: 0 !important; }
+            table.mcards thead { display: none; }
+            table.mcards, table.mcards tbody, table.mcards tr, table.mcards td { display: block; width: 100%; }
+            table.mcards tbody tr { border: 1px solid #e5e7eb; border-radius: 16px; margin: 0 0 10px; padding: 8px 12px; background: #fff; }
+            table.mcards tbody tr[data-tempty], table.mcards tbody tr:has(td[colspan]) { border: 0; padding: 0; }
+            table.mcards td { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 12px; padding: 5px 0 !important; border: 0 !important; text-align: right; overflow-wrap: anywhere; }
+            table.mcards td > * { min-width: 0; max-width: 100%; white-space: normal; }
+            table.mcards td { min-width: 0; }
+            table.mcards td:last-child { justify-content: flex-end; }
+            table.mcards td:last-child[data-label]::before { flex-basis: 100%; text-align: left; }
+            table.mcards td[data-label]::before { content: attr(data-label); flex-shrink: 0; font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .04em; text-align: left; }
+            table.mcards td[data-label='']::before { display: none; }
+            table.mcards td[colspan] { display: block; text-align: center; }
+        }
         @media (max-width: 767px) { #modalContentBox { max-height: 92vh; max-height: 92dvh; } }
         .print-only { display: none; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -2012,7 +2029,64 @@
             run(async () => { const { error } = await sb.from('profiles').update(upd).eq('id', mockState.uid); if (error) throw error; closeModal(); },
                 ['Tersimpan', on ? `Alfa otomatis aktif, batas jam ${cut} WIB.` : 'Alfa otomatis dinonaktifkan.'], currentActiveRoute);
         }
-// ---------- Struktur navigasi: Disiplin & Tindak Lanjut, Konfigurasi, Perlu Tindakan ----------
+// ---------- Penyempurna tampilan lintas halaman (tanpa mengubah fungsi halaman) ----------
+        const ROUTE_META = {
+            dashboard: ['Operasional Harian', 'Dashboard', 'fa-chart-pie'], qrAbsensi: ['Operasional Harian', 'Absensi QR', 'fa-qrcode'], permissions: ['Operasional Harian', 'Verifikasi Izin', 'fa-envelope-open-text'],
+            students: ['Kesiswaan', 'Data Siswa', 'fa-users'], accounts: ['Kesiswaan', 'Akun Siswa', 'fa-user-gear'],
+            discipline: ['Disiplin & Pembinaan', 'Disiplin & Tindak Lanjut', 'fa-scale-balanced'], violations: ['Disiplin & Pembinaan', 'Pelanggaran & Poin', 'fa-triangle-exclamation'], counseling: ['Disiplin & Pembinaan', 'Pembinaan & Konseling', 'fa-user-shield'], homeVisit: ['Disiplin & Pembinaan', 'Home Visit', 'fa-house-chimney-user'],
+            analytics: ['Analitik & Laporan', 'Analitik Kondisi Kelas', 'fa-chart-line'], reports: ['Analitik & Laporan', 'Pusat Laporan', 'fa-print'], cariCetakIndiv: ['Analitik & Laporan', 'Cetak Data Individu', 'fa-id-card-clip'],
+            config: ['Konfigurasi', 'Konfigurasi Sistem', 'fa-sliders'], settings: ['Konfigurasi', 'Pengaturan Akun & Sekolah', 'fa-gear']
+        };
+        const TABLE_ROUTES = ['students', 'accounts', 'permissions', 'violations', 'counseling', 'homeVisit'];
+        const NO_FILTER_COL = /aksi|kelola|detail|foto|avatar|^no\.?$|^#$|bukti|nama|uraian|keterangan|alasan|hasil|tindakan|siswa|nisn|nis$/i;
+        function enhancePage(route, area) {
+            if (mockState.currentRole !== 'walikelas' || !area || !ROUTE_META[route]) return;
+            const meta = ROUTE_META[route];
+            area.insertAdjacentHTML('afterbegin', `<nav class="no-print flex items-center gap-1.5 text-[11px] font-semibold text-gray-400 mb-3" aria-label="Breadcrumb"><span>${meta[0]}</span><i class="fa-solid fa-chevron-right text-[8px]"></i><span class="text-santara-navy">${meta[1]}</span></nav>`);
+            if (!['dashboard', 'discipline', 'config', 'analytics'].includes(route)) {
+                const h3 = area.querySelector('h3.text-lg'), box = h3 && h3.parentElement;
+                if (box && !box.dataset.norm) {
+                    box.dataset.norm = '1'; h3.className = 'text-base font-extrabold text-santara-navy';
+                    box.innerHTML = `<div class="flex items-center gap-3"><span class="w-11 h-11 shrink-0 rounded-2xl bg-santara-navy text-white flex items-center justify-center text-lg"><i class="fa-solid ${meta[2]}"></i></span><div>${box.innerHTML}</div></div>`;
+                }
+            }
+            if (TABLE_ROUTES.includes(route)) enhanceTables(route, area);
+        }
+        function enhanceTables(route, area) {
+            area.querySelectorAll('table').forEach((tb, ti) => {
+                const heads = Array.from(tb.querySelectorAll('thead th')).map(th => th.textContent.trim());
+                const rows = Array.from(tb.querySelectorAll('tbody tr')).filter(tr => !tr.querySelector('td[colspan]'));
+                Array.from(tb.querySelectorAll('tbody tr')).forEach(tr => Array.from(tr.children).forEach((td, i) => { if (td.tagName === 'TD' && !td.hasAttribute('colspan')) td.setAttribute('data-label', heads[i] || ''); }));
+                tb.classList.add('mcards');
+                const tbody = tb.querySelector('tbody'); if (!tbody) return;
+                if (!rows.length) { if (!tbody.querySelector('td[colspan]')) tbody.insertAdjacentHTML('beforeend', `<tr data-tempty><td colspan="${heads.length || 1}" class="p-10 text-center text-gray-400 font-medium">Belum ada data untuk ditampilkan.</td></tr>`); return; }
+                if (route === 'students') return;   // halaman ini sudah punya pencarian sendiri
+                const cellTxt = (tr, i) => ((tr.children[i] || {}).textContent || '').trim().split('\n')[0].trim();
+                const sels = [];
+                heads.forEach((h, i) => { if (!h || NO_FILTER_COL.test(h) || sels.length >= 2) return; const u = Array.from(new Set(rows.map(tr => cellTxt(tr, i)).filter(x => x && x.length <= 26))); if (u.length >= 2 && u.length <= 6) sels.push({ i, h, u: u.sort() }); });
+                const wrap = tb.closest('.overflow-x-auto'), host = wrap ? wrap.parentElement : tb.parentElement, id = 'tbar' + ti;
+                host.insertAdjacentHTML('afterbegin', `<div class="no-print flex flex-wrap items-center gap-2 p-3.5 border-b border-santara-border bg-gray-50/60" data-tbar="${id}">
+                    <div class="relative flex-1 min-w-[180px]"><i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i><input type="search" data-tsearch placeholder="Cari di tabel..." aria-label="Cari di tabel" class="w-full pl-9 pr-3 py-2.5 border border-santara-border rounded-xl text-xs font-medium bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none"></div>
+                    ${sels.map(x => `<select data-tcol="${x.i}" aria-label="Filter ${esc(x.h)}" class="px-3 py-2.5 border border-santara-border rounded-xl text-xs font-semibold bg-white"><option value="">${esc(x.h)}: semua</option>${x.u.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}</select>`).join('')}
+                    <span data-tcount class="text-[11px] text-gray-400 font-semibold"></span>
+                    <button type="button" data-treset class="px-3 py-2.5 text-[11px] font-bold text-santara-navy bg-white border border-santara-border rounded-xl">Atur ulang</button></div>`);
+                const bar = host.querySelector(`[data-tbar="${id}"]`), inp = bar.querySelector('[data-tsearch]'), cnt = bar.querySelector('[data-tcount]');
+                const apply = () => {
+                    const q = inp.value.trim().toLowerCase(), f = Array.from(bar.querySelectorAll('select')).map(se => [Number(se.dataset.tcol), se.value]).filter(x => x[1]);
+                    let vis = 0;
+                    rows.forEach(tr => { const ok = (!q || tr.textContent.toLowerCase().includes(q)) && f.every(x => cellTxt(tr, x[0]) === x[1]); tr.style.display = ok ? '' : 'none'; if (ok) vis++; });
+                    let em = tbody.querySelector('[data-tempty]');
+                    if (!vis && !em) tbody.insertAdjacentHTML('beforeend', `<tr data-tempty><td colspan="${heads.length || 1}" class="p-8 text-center text-gray-400 font-medium">Tidak ada data yang cocok dengan pencarian atau filter.</td></tr>`);
+                    if (vis && em) em.remove();
+                    cnt.textContent = `${vis} dari ${rows.length}`;
+                };
+                inp.addEventListener('input', apply); bar.querySelectorAll('select').forEach(se => se.addEventListener('change', apply));
+                bar.querySelector('[data-treset]').addEventListener('click', () => { inp.value = ''; bar.querySelectorAll('select').forEach(se => { se.value = ''; }); apply(); });
+                apply();
+            });
+        }
+
+        // ---------- Struktur navigasi: Disiplin & Tindak Lanjut, Konfigurasi, Perlu Tindakan ----------
         let discTab = 'alert';
         function goDisc(tab) { discTab = tab; renderView('discipline'); }
         function pageHeader(icon, title, sub, actions) {
@@ -2556,7 +2630,7 @@
                 let alertN = 0; try { alertN = computeAllAlerts().length; } catch (e) { alertN = 0; }
                 const badge = (n, red) => n ? `<span class="ml-auto ${red ? 'bg-red-500' : 'bg-amber-500'} text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">${n}</span>` : '';
                 const grp = (label, first) => `<div class="text-[10px] uppercase tracking-wider text-teal-300 font-bold px-3 ${first ? 'py-1' : 'pt-3 pb-1'}">${label}</div>`;
-                const link = (route, icon, label, b) => `<a href="#" onclick="renderView('${route}')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === route ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid ${icon} w-5"></i><span>${label}</span>${b || ''}</a>`;
+                const link = (route, icon, label, b) => `<a href="#" ${currentActiveRoute === route ? 'aria-current="page"' : ''} onclick="renderView('${route}')" class="flex items-center space-x-3 px-3.5 py-3 rounded-xl transition ${currentActiveRoute === route ? 'bg-santara-teal text-white shadow-md' : 'hover:bg-white/10 text-gray-200'}"><i class="fa-solid ${icon} w-5"></i><span>${label}</span>${b || ''}</a>`;
                 sidebarHtml = grp('OPERASIONAL HARIAN', true) + link('dashboard', 'fa-chart-pie', 'Dashboard Kelas') + link('qrAbsensi', 'fa-qrcode', 'Absensi QR & Set Waktu') + link('permissions', 'fa-envelope-open-text', 'Verifikasi Izin & Sakit', badge(pendPerm)) +
                     grp('KESISWAAN') + link('students', 'fa-users', 'Data Siswa') + link('accounts', 'fa-user-gear', 'Akun Siswa') +
                     grp('DISIPLIN & PEMBINAAN') + link('discipline', 'fa-scale-balanced', 'Disiplin & Tindak Lanjut', badge(alertN, true)) + link('violations', 'fa-triangle-exclamation', 'Catat Pelanggaran & Poin') + link('counseling', 'fa-user-shield', 'Pembinaan & Konseling') + link('homeVisit', 'fa-house-chimney-user', 'Home Visit & Dokumen') +
@@ -2670,6 +2744,7 @@
             else if (route === 'analytics') renderAnalyticsPage(area);
             else if (route === 'discipline') renderDisciplinePage(area);
             else if (route === 'config') renderConfigPage(area);
+            try { enhancePage(route, area); } catch (e) { console.error('enhancePage', e); }
         }
 
         function renderWaliDashboard(container) {
@@ -2684,7 +2759,7 @@
                         <div class="relative z-10 space-y-2 max-w-2xl">
                             <span class="px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-xs font-bold tracking-wider uppercase inline-block">${mockState.schoolConfig.schoolName} • TP ${mockState.schoolConfig.academicYear}</span>
                             <h2 class="text-2xl md:text-3xl font-black tracking-tight">Dashboard Kelas ${mockState.schoolConfig.className}</h2>
-                            <p class="text-xs md:text-sm text-blue-100 font-medium leading-relaxed">Selamat datang, ${mockState.schoolConfig.teacherName}. Sistem pemantauan kehadiran real-time dan manajemen kedisiplinan siswa siap melayani Anda hari ini.</p>
+                            <p class="text-xs md:text-sm text-blue-100 font-medium leading-relaxed">Selamat datang, ${String(mockState.schoolConfig.teacherName || '').replace(/\.$/, '')}. Sistem pemantauan kehadiran real-time dan manajemen kedisiplinan siswa siap melayani Anda hari ini.</p>
                             <button onclick="sendAlfaLateRecap()" class="mt-2 px-4 py-2.5 bg-white text-santara-navy hover:bg-gray-100 rounded-2xl text-xs font-bold shadow-md transition inline-flex items-center space-x-2"><i class="fa-brands fa-whatsapp text-green-600 text-base"></i><span>Kirim Rekap Alfa & Terlambat</span></button>
                         </div>
                     </div>
@@ -3015,11 +3090,11 @@ async function sendAlfaLateRecap() {
                             <p class="text-xs text-santara-textSec mt-0.5">Kelola kredensial login, buat akun baru, reset password, nonaktifkan akun, atau impor data siswa.</p>
                         </div>
                         <div class="flex space-x-2">
-                            <button onclick="openImportCsvModal()" class="px-4 py-3 bg-santara-teal hover:bg-teal-800 text-white rounded-2xl text-xs font-bold transition shadow-md flex items-center space-x-2">
+                            <button onclick="openImportCsvModal()" class="px-4 py-3 bg-white border border-santara-border hover:bg-gray-50 text-santara-navy rounded-2xl text-xs font-bold transition flex items-center space-x-2">
                                 <i class="fa-solid fa-file-arrow-up text-sm"></i>
                                 <span>Impor Data Siswa</span>
                             </button>
-                            <button onclick="openAddStudentModal()" class="px-4 py-3 bg-santara-blue hover:bg-blue-700 text-white rounded-2xl text-xs font-bold transition shadow-md flex items-center space-x-2">
+                            <button onclick="openAddStudentModal()" class="px-4 py-3 bg-santara-teal hover:bg-teal-800 text-white rounded-2xl text-xs font-bold transition shadow-md flex items-center space-x-2">
                                 <i class="fa-solid fa-user-plus text-sm"></i>
                                 <span>Tambah Siswa</span>
                             </button>
