@@ -309,6 +309,50 @@
     </div>
 
     <script>
+/* =====================================================================
+   PETA KODE SANTARA (satu berkas). Rincian lengkap: PETA_KODE.md
+   Bagian utama, berurutan dari atas ke bawah:
+   - Helper
+   - Muat semua data milik guru dari Supabase
+   - Sesi
+   - Util data
+   - Pusat Alert & Early Warning
+   - Dashboard siswa: banner personal & badge teladan
+   - Analitik dashboard wali (data langsung dari database)
+   - 1) Tren kehadiran (batang + garis)
+   - 2) Donat persentase kehadiran
+   - 3) Top 5 permasalahan
+   - 4) Rekap kondisi siswa (penetapan manual wali kelas)
+   - 5) Aktivitas terbaru
+   - Surat resmi: SP, panggilan, pernyataan, skorsing, rekam pleno (cetak & PDF)
+   - Tahap C: Analitik Kondisi Kelas
+   - KPI
+   - statistik turunan
+   - halaman
+   - panel kehadiran
+   - panel kedisiplinan
+   - panel pembinaan
+   - laporan
+   - Tahap B: tindakan wajib per tahap, pemutihan poin, skorsing
+   - wali: tahap & tindakan wajib, pemutihan
+   - pemutihan
+   - siswa mengajukan pemutihan
+   - Mesin poin kedisiplinan, tahap I–IV, katalog bobot
+   - Alfa otomatis, pencegahan dini kehadiran, koreksi absensi
+   - Penyempurna tampilan lintas halaman (tanpa mengubah fungsi halaman)
+   - Struktur navigasi: Disiplin & Tindak Lanjut, Konfigurasi, Perlu Tindakan
+   - analisis kehadiran hari ini
+   - Kalender hari libur (sekolah 5 hari kerja)
+   - Logo (opsional, diatur lewat LOGO_SANTARA_URL / LOGO_SEKOLAH_URL)
+   - Helper WhatsApp
+   - QR dinamis (berotasi tiap 30 detik, ditandatangani server)
+   - Sesi
+   - Filter perizinan (default: hari ini)
+   Konvensi: data dari database di-escape saat dimuat (esc); gunakan unesc() untuk teks biasa
+   (pesan WhatsApp, surat, innerText). URL gambar/tautan wajib lewat safeImg()/cleanUrl().
+   Semua perubahan data melalui run(fn, pesan, rute) lalu refreshData() agar tampilan sinkron.
+   ===================================================================== */
+
         // =====================================================================
         // KONFIGURASI SUPABASE — ISI DUA NILAI INI (Supabase > Project Settings > API)
         // =====================================================================
@@ -325,6 +369,9 @@
         const sb = (window.supabase && !SUPABASE_URL.includes('GANTI-DENGAN') && !SUPABASE_ANON_KEY.includes('GANTI-DENGAN'))
             ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
+        // Sanitasi URL dari database: hanya http(s) atau gambar data base64; selain itu diganti nilai aman.
+        function safeImg(u) { u = String(u == null ? '' : u).trim(); return u.length < 600000 && /^(https?:\/\/[^\s"'<>]+|data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+\/=]+)$/i.test(u) ? u : DEFAULT_AVATAR; }
+        function cleanUrl(u) { u = String(u == null ? '' : u).trim(); return /^https?:\/\/[^\s"'<>]+$/i.test(u) ? u : ''; }
         const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
         // mockState kini hanya CACHE tampilan; sumber data asli = Supabase (loadAll()).
         const mockState = {
@@ -359,6 +406,9 @@
             if (/BUKAN_PETUGAS/.test(m)) return 'Anda belum ditugaskan sebagai Petugas QR.';
             if (/PASSWORD_PENDEK/.test(m)) return 'Password minimal 6 karakter.';
             if (/ALASAN_KOSONG/.test(m)) return 'Alasan wajib diisi.';
+            if (/DATA_TERLALU_PANJANG/.test(m)) return 'Data terlalu panjang. Persingkat isian Anda.';
+            if (/AVATAR_INVALID/.test(m)) return 'Foto tidak valid. Gunakan unggah foto dari perangkat atau tautan gambar http(s).';
+            if (/ALASAN_PANJANG/.test(m)) return 'Alasan terlalu panjang (maksimal 300 karakter).';
             if (/IZIN_TERLAMBAT/.test(m)) return 'Batas pengajuan izin/sakit (2x24 jam) sudah terlewat. Hubungi Wali Kelas untuk koreksi.';
             if (/alfa_cutoff/.test(m)) return 'Fitur batas jam belum aktif. Jalankan santara_supabase_v11_batas_jam_alfa.sql di Supabase.';
             if (/SKORSING/.test(m)) return 'Anda sedang dalam masa skorsing, absensi QR dinonaktifkan.';
@@ -434,7 +484,7 @@
                 prof = ins.data;
             }
             const sc = mockState.schoolConfig;
-            Object.assign(sc, { schoolName: prof.school_name, department: prof.department, className: prof.class_name, academicYear: prof.academic_year, principalName: prof.principal_name, principalNip: prof.principal_nip, teacherName: prof.teacher_name, teacherNip: prof.teacher_nip, teacherPhone: prof.teacher_phone, address: prof.address, avatar: prof.avatar || DEFAULT_AVATAR });
+            Object.assign(sc, { schoolName: esc(prof.school_name), department: esc(prof.department), className: esc(prof.class_name), academicYear: prof.academic_year, principalName: esc(prof.principal_name), principalNip: prof.principal_nip, teacherName: esc(prof.teacher_name), teacherNip: prof.teacher_nip, teacherPhone: prof.teacher_phone, address: esc(prof.address), avatar: safeImg(prof.avatar) || DEFAULT_AVATAR });
             mockState.qrSettings.startTime = prof.qr_start;
             mockState.qrSettings.toleranceTime = prof.qr_tolerance;
             mockState.conditionLabels = prof.condition_labels || {};
@@ -456,7 +506,7 @@
             const today = todayISO();
             const sum = {}, todayRow = {};
             res[2].data.forEach(a => {
-                if (!isSchoolDay(a.att_date)) return;   // akhir pekan / hari libur tidak dihitung
+                if (!statRowOk(a.student_id, a.att_date)) return;   // hari sekolah dalam tahun ajaran, bukan skorsing
                 const m = sum[a.student_id] || (sum[a.student_id] = { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 });
                 m[a.status.toLowerCase()]++;
                 if (a.att_date === today) todayRow[a.student_id] = a;
@@ -464,16 +514,16 @@
             const byId = {};
             mockState.students = res[1].data.map(r => {
                 const t = todayRow[r.id];
-                const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer, conditionStatus: r.condition_status || null, createdAt: r.created_at, updatedAt: r.updated_at,
-                    status: t ? t.status : (isSchoolDay(today) ? 'BELUM' : 'LIBUR'), time: t ? t.scan_time : '-', attendanceSummary: sum[r.id] || { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 },
+                const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: safeImg(r.avatar), isQrOfficer: !!r.is_qr_officer, conditionStatus: r.condition_status || null, createdAt: r.created_at, updatedAt: r.updated_at,
+                    status: t ? t.status : (!isSchoolDay(today) ? 'LIBUR' : isSuspended(r.id, today) ? 'SKORSING' : 'BELUM'), time: t ? t.scan_time : '-', attendanceSummary: sum[r.id] || { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 },
                     username: r.nis, accountStatus: r.is_active ? 'Aktif' : 'Nonaktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
                 byId[r.id] = st; return st;
             });
             const who = id => byId[id] || { name: 'Siswa (dihapus)', nis: '-' };
             mockState.violations = res[3].data.map(r => ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, pts: r.pts != null ? r.pts : Math.abs(r.points || 0), status: r.status || 'TERBUKTI', ruleId: r.rule_id, qty: r.qty || 1, reporter: esc(r.reporter || ''), cancelReason: esc(r.cancel_reason || ''), studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.vio_date), violation: esc(r.violation), category: r.category, points: r.points, action: esc(r.action) }));
             mockState.counseling = res[4].data.map(r => ({ id: r.id, createdAt: r.created_at, rawDate: r.c_date, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.c_date), category: esc(r.category), description: esc(r.description), action: esc(r.action), result: esc(r.result), status: r.status }));
-            mockState.homeVisits = res[5].data.map(r => ({ id: r.id, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: r.evidence_url }));
-            mockState.permissions = res[6].data.map(r => ({ id: r.id, studentId: r.student_id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, category: r.category, date: fmtDate(r.perm_date), rawDate: r.perm_date, reason: esc(r.reason), status: r.status, evidenceType: 'whatsapp', evidenceUrl: r.evidence_url || `https://wa.me/${sc.teacherPhone}` }));
+            mockState.homeVisits = res[5].data.map(r => ({ id: r.id, createdAt: r.created_at, studentName: who(r.student_id).name, nis: who(r.student_id).nis, date: fmtDate(r.visit_date), officer: esc(r.officer), reason: esc(r.reason), result: esc(r.result), status: r.status, evidenceUrl: cleanUrl(r.evidence_url) }));
+            mockState.permissions = res[6].data.map(r => ({ id: r.id, studentId: r.student_id, studentName: who(r.student_id).name, nis: who(r.student_id).nis, category: r.category, date: fmtDate(r.perm_date), rawDate: r.perm_date, reason: esc(r.reason), status: r.status, evidenceType: 'whatsapp', evidenceUrl: cleanUrl(r.evidence_url) || `https://wa.me/${sc.teacherPhone}` }));
             recalculateStats();
         }
 
@@ -483,7 +533,7 @@
             mockState.uid = user.id;
             await loadAll();
             const sc = mockState.schoolConfig;
-            mockState.currentUser = { id: 0, name: sc.teacherName, role: `Wali Kelas ${sc.className}`, nip: sc.teacherNip, avatar: sc.avatar, isQrOfficer: false, phone: sc.teacherPhone, address: sc.schoolName, parent: 'Wali Kelas', parentPhone: sc.teacherPhone };
+            mockState.currentUser = { id: 0, name: unesc(sc.teacherName), role: `Wali Kelas ${unesc(sc.className)}`, nip: sc.teacherNip, avatar: sc.avatar, isQrOfficer: false, phone: sc.teacherPhone, address: unesc(sc.schoolName), parent: 'Wali Kelas', parentPhone: sc.teacherPhone };
             proceedLoginSuccess();
         }
         // ---------- Util data ----------
@@ -514,7 +564,7 @@
         // Setelah ada tindak lanjut, alert hanya menyala KEMBALI (eskalasi) bila ada pelanggaran/alfa BARU
         // sesudah tindak lanjut terakhir dan siswa masih berada di atas batas.
         function computeAlert(st) {
-            const alfaRows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.status === 'ALFA' && isSchoolDay(a.date));
+            const alfaRows = alfaRowsOf(st);
             const viols = mockState.violations.filter(v => v.nis === st.nis && v.status !== 'BATAL');
             const dsc = computeDiscipline(st);
             const pts = dsc.karakter;
@@ -743,7 +793,7 @@
         // Catatan valid = catatan absensi berstatus 5 kategori milik siswa yang ada di kelas. 1 catatan = 1 siswa pada 1 hari.
         function validRecords() {
             const map = {}; mockState.students.forEach(x => { map[x.id] = x; });
-            return (mockState.attendanceRows || []).filter(a => STATUS_KEYS.includes(a.status) && map[a.sid] && isSchoolDay(a.date)).map(a => ({ ...a, st: map[a.sid] }));
+            return (mockState.attendanceRows || []).filter(a => STATUS_KEYS.includes(a.status) && map[a.sid] && isSchoolDay(a.date) && !isSuspended(a.sid, a.date)).map(a => ({ ...a, st: map[a.sid] }));
         }
         function countStatus(recs) { const c = { HADIR: 0, TERLAMBAT: 0, SAKIT: 0, IZIN: 0, ALFA: 0 }; recs.forEach(r => { c[r.status]++; }); return c; }
         // Persentase kehadiran = (Hadir + Terlambat) / total catatan valid. Konsisten di semua grafik.
@@ -1432,17 +1482,27 @@
             if (m.c.ALFA) map.__alfa = { key: '__alfa', label: 'Alfa (tidak hadir)', pts: m.c.ALFA * ruleW('ALFA', 2), n: m.c.ALFA, kind: 'alfa' };
             return Object.values(map).sort((a, b) => b.pts - a.pts);
         }
+        // mode 'alfa' = hanya Alfa berurutan (selaras dengan alert Alfa & laporan); mode 'all' = Alfa + Sakit + Izin
+        let streakMode = 'alfa';
+        function setStreakMode(m) { streakMode = m; safePanel('panelStreak', renderStreakPanel); }
         function absenceStreaks(r, minLen) {
-            const absent = ['ALFA', 'SAKIT', 'IZIN'], by = {};
-            validRecords().forEach(x => { (by[x.sid] || (by[x.sid] = {}))[x.date] = x.status; });
+            const absent = streakMode === 'alfa' ? ['ALFA'] : ['ALFA', 'SAKIT', 'IZIN'], by = {};
+            validRecords().forEach(x => { if (statRowOk(x.sid, x.date)) (by[x.sid] || (by[x.sid] = {}))[x.date] = x.status; });
             const out = [], t = todayISO(), { from } = yearBounds();
             activeStudents().forEach(st => {
                 const m = by[st.id] || {}; let run = [];
                 const flush = () => { if (run.length >= minLen && run[run.length - 1].d >= r.from && run[0].d <= r.to) out.push({ st, run }); run = []; };
-                for (let d = from; d <= t; d = dateAddDays(d, 1)) { if (!isSchoolDay(d)) continue; const x = m[d]; if (x && absent.includes(x)) run.push({ d, s: x }); else flush(); }
+                for (let d = from; d <= t; d = dateAddDays(d, 1)) { if (!isSchoolDay(d) || isSuspended(st.id, d)) continue; const x = m[d]; if (x && absent.includes(x)) run.push({ d, s: x }); else flush(); }
                 flush();
             });
             return out.sort((a, b) => b.run.length - a.run.length);
+        }
+        function streakBreakdown(run) { const c = {}, lb = { ALFA: 'Alfa', SAKIT: 'Sakit', IZIN: 'Izin' }; run.forEach(x => { c[x.s] = (c[x.s] || 0) + 1; }); return ['ALFA', 'SAKIT', 'IZIN'].filter(k => c[k]).map(k => `${c[k]} ${lb[k]}`).join(' • '); }
+        function openStreakDetail(sid) {
+            const r = anRange(), x = absenceStreaks(r, 3).find(y => y.st.id === sid); if (!x) return;
+            openListModal(`Rincian • ${x.st.name}`, `${x.run.length} hari sekolah berurutan: ${streakBreakdown(x.run)}`,
+                x.run.map(d => `<div class="flex items-center justify-between py-2.5"><span class="font-bold text-santara-navy">${dayName(d.d)}, ${fmtDate(d.d)}</span><span class="px-2.5 py-1 rounded-full text-[10px] font-extrabold text-white" style="background:${STATUS_META[d.s].color}">${d.s === 'ALFA' ? 'Alfa' : STATUS_META[d.s].label}</span></div>`).join('') +
+                `<button onclick="openStudentFromModal(${sid})" class="w-full mt-3 py-2.5 bg-gray-50 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Buka profil siswa</button>`);
         }
         function interventionStats(r) {
             const t = Date.now(), DAY = 86400000, w = { late: ruleW('TERLAMBAT', 1), alfa: ruleW('ALFA', 2) }, out = { delays: [], before: 0, after: 0, n: 0, dec: 0, recN: 0, rec: 0 };
@@ -1565,10 +1625,11 @@
         }
         function renderStreakPanel() {
             const el = document.getElementById('panelStreak'); if (!el) return;
-            const r = anRange(), list = absenceStreaks(r, 3);
-            el.innerHTML = panelCard(panelHead('fa-person-walking-arrow-right', 'bg-red-50 text-red-600', 'Tidak Hadir Beruntun (3 Hari Sekolah+)', `${list.length} siswa • ${r.label}`) +
-                (list.length ? `<div class="divide-y divide-gray-100">${list.slice(0, 10).map(x => `<button onclick="openStudentFromModal(${x.st.id})" class="w-full flex items-center justify-between py-2.5 gap-3 text-left"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${x.st.name}</span><span class="block text-[10px] text-gray-400">${fmtDate(x.run[0].d)} – ${fmtDate(x.run[x.run.length - 1].d)}</span></span><span class="px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-[11px] font-extrabold shrink-0">${x.run.length} hari</span></button>`).join('')}</div>` : emptyBox('fa-circle-check', 'Tidak ada siswa yang tidak hadir 3 hari sekolah beruntun.')) +
-                '<p class="text-[10px] text-gray-400">Alfa, sakit, dan izin berurutan pada hari sekolah. Hari libur tidak memutus urutan.</p>');
+            const r = anRange(), list = absenceStreaks(r, 3), alfaOnly = streakMode === 'alfa';
+            const right = `<div class="flex gap-1.5">${tabBtn('Hanya Alfa', alfaOnly, "setStreakMode('alfa')")}${tabBtn('Alfa + Sakit + Izin', !alfaOnly, "setStreakMode('all')")}</div>`;
+            el.innerHTML = panelCard(panelHead('fa-person-walking-arrow-right', 'bg-red-50 text-red-600', alfaOnly ? 'Alfa Beruntun (3 Hari Sekolah+)' : 'Tidak Hadir Beruntun (3 Hari Sekolah+)', `${list.length} siswa • ${r.label}`, right) +
+                (list.length ? `<div class="divide-y divide-gray-100">${list.slice(0, 10).map(x => `<button onclick="openStreakDetail(${x.st.id})" class="w-full flex items-center justify-between py-2.5 gap-3 text-left"><span class="min-w-0"><span class="block font-bold text-xs text-santara-navy truncate">${x.st.name}</span><span class="block text-[10px] text-gray-400">${fmtDate(x.run[0].d)} – ${fmtDate(x.run[x.run.length - 1].d)} • ${streakBreakdown(x.run)}</span></span><span class="px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-[11px] font-extrabold shrink-0">${x.run.length} hari</span></button>`).join('')}</div>` : emptyBox('fa-circle-check', alfaOnly ? 'Tidak ada siswa dengan 3 Alfa berurutan.' : 'Tidak ada siswa yang tidak hadir 3 hari sekolah beruntun.')) +
+                `<p class="text-[10px] text-gray-400">${alfaOnly ? 'Hanya hari berstatus Alfa yang berurutan. ' : 'Menghitung Alfa, sakit, dan izin yang berurutan; rincian per status ditampilkan pada setiap baris. '}Hari libur dan hari skorsing tidak memutus urutan. Alert Early Warning menyala pada total 3 Alfa (tidak harus berurutan).</p>`);
         }
         function renderIzinPanel() {
             const el = document.getElementById('panelIzin'); if (!el) return;
@@ -1888,6 +1949,10 @@
 
         // ---------- Mesin poin kedisiplinan, tahap I–IV, katalog bobot ----------
         const STAGES = [['Aman', 'bg-green-100 text-green-800'], ['Tahap I • Waspada', 'bg-yellow-100 text-yellow-800'], ['Tahap II • SP1', 'bg-orange-100 text-orange-800'], ['Tahap III • SP2', 'bg-red-100 text-red-800'], ['Tahap IV • Kritis / Siap Pleno', 'bg-red-700 text-white']];
+        // Satu aturan baku untuk semua angka kehadiran (laporan, analitik, alert, poin): hanya hari sekolah
+        // dalam tahun ajaran berjalan, dan bukan hari skorsing.
+        function statRowOk(sid, date) { const b = yearBounds(); return date >= b.from && date <= b.to && isSchoolDay(date) && !isSuspended(sid, date); }
+        function alfaRowsOf(st) { return (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.status === 'ALFA' && statRowOk(a.sid, a.date)); }
         function ruleById(id) { return (mockState.rules || []).find(r => r.id === id) || null; }
         function ruleW(code, def) { const r = (mockState.rules || []).find(x => x.code === code); return r ? r.points : def; }
         function yearBounds() {
@@ -1901,7 +1966,7 @@
             const cache = mockState._disc || (mockState._disc = {});
             if (cache[st.id] && st.id != null) return cache[st.id];
             const { from, to } = yearBounds();
-            const rows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && a.date >= from && a.date <= to && isSchoolDay(a.date) && !isSuspended(st.id, a.date));
+            const rows = (mockState.attendanceRows || []).filter(a => a.sid === st.id && statRowOk(a.sid, a.date));
             const late = rows.filter(a => a.status === 'TERLAMBAT').length;
             const alfa = rows.filter(a => a.status === 'ALFA').length;
             const vs = mockState.violations.filter(v => v.nis === st.nis && (v.status || 'TERBUKTI') === 'TERBUKTI' && (v.rawDate || '') >= from && (v.rawDate || '') <= to);
@@ -2144,12 +2209,12 @@
             const t = todayISO(), act = activeStudents();
             if (!isSchoolDay(t) || !act.length) { box.innerHTML = ''; return; }
             const cnt = { HADIR: 0, TERLAMBAT: 0, SAKIT: 0, IZIN: 0, ALFA: 0, BELUM: 0 };
-            act.forEach(s => { cnt[cnt[s.status] != null ? s.status : 'BELUM']++; });
+            act.forEach(s => { if (s.status === 'SKORSING') return; cnt[cnt[s.status] != null ? s.status : 'BELUM']++; });
             const cut = mockState.alfaCutoff || '09:00', auto = !!mockState.autoAlfaStart, passed = nowHM() >= cut;
             const [ch, cm] = cut.split(':').map(Number), [nh, nm] = nowHM().split(':').map(Number), left = ch * 60 + cm - (nh * 60 + nm);
             const info = !auto ? 'Alfa otomatis belum aktif' : passed ? `Batas jam ${cut} WIB terlewati: yang belum absen tercatat Alfa` : `Batas jam ${cut} WIB • ${left >= 60 ? Math.floor(left / 60) + ' jam ' : ''}${left % 60} menit lagi`;
             const col = { HADIR: '#22c55e', TERLAMBAT: '#eab308', SAKIT: '#3b82f6', IZIN: '#a855f7', ALFA: '#ef4444', BELUM: '#cbd5e1' }, lbl = { HADIR: 'Hadir', TERLAMBAT: 'Terlambat', SAKIT: 'Sakit', IZIN: 'Izin', ALFA: 'Alfa', BELUM: 'Belum scan' };
-            const open = cnt.BELUM + cnt.ALFA, n = act.length, present = cnt.HADIR + cnt.TERLAMBAT;
+            const n = act.filter(s => s.status !== 'SKORSING').length || 1, open = cnt.BELUM + cnt.ALFA, present = cnt.HADIR + cnt.TERLAMBAT;
             box.innerHTML = panelCard(panelHead('fa-calendar-day', 'bg-blue-50 text-blue-600', 'Status Absensi Hari Ini', `${tglPanjang()} • ${info}`, open ? `<button onclick="openNotYetList()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-santara-navy text-white">Belum absen / Alfa (${open})</button>` : '') +
                 `<div class="h-3 rounded-full overflow-hidden flex bg-gray-100">${Object.keys(cnt).filter(k => cnt[k]).map(k => `<div style="width:${cnt[k] * 100 / n}%;background:${col[k]}" title="${lbl[k]} ${cnt[k]}"></div>`).join('')}</div>` +
                 `<p class="text-[11px] text-gray-500 font-semibold">${present} dari ${n} siswa sudah absen (${round1(present * 100 / n)}%) • rincian per status pada kartu di bawah</p>`);
@@ -2363,17 +2428,9 @@
         }
 
         // ---------- Sesi ----------
-        async function startTeacherSession(user) {
-            mockState.currentRole = 'walikelas';
-            mockState.uid = user.id;
-            await loadAll();
-            const sc = mockState.schoolConfig;
-            mockState.currentUser = { id: 0, name: sc.teacherName, role: `Wali Kelas ${sc.className}`, nip: sc.teacherNip, avatar: sc.avatar, isQrOfficer: false, phone: sc.teacherPhone, address: sc.schoolName, parent: 'Wali Kelas', parentPhone: sc.teacherPhone };
-            proceedLoginSuccess();
-        }
         function applyStudentData(me) {
             const p = me.profile, r = me.student, sc = mockState.schoolConfig;
-            Object.assign(sc, { schoolName: p.school_name, department: p.department, className: p.class_name, academicYear: p.academic_year, principalName: p.principal_name, principalNip: p.principal_nip, teacherName: p.teacher_name, teacherNip: p.teacher_nip, teacherPhone: p.teacher_phone, address: p.address, avatar: DEFAULT_AVATAR });
+            Object.assign(sc, { schoolName: esc(p.school_name), department: esc(p.department), className: esc(p.class_name), academicYear: p.academic_year, principalName: esc(p.principal_name), principalNip: p.principal_nip, teacherName: esc(p.teacher_name), teacherNip: p.teacher_nip, teacherPhone: p.teacher_phone, address: esc(p.address), avatar: DEFAULT_AVATAR });
             mockState.qrSettings.startTime = p.qr_start;
             mockState.qrSettings.toleranceTime = p.qr_tolerance;
             mockState.holidays = (me.holidays || []).map(h => ({ date: h.h_date, name: h.name, type: h.type }));
@@ -2389,17 +2446,17 @@
             const today = todayISO();
             const sum = { hadir: 0, terlambat: 0, sakit: 0, izin: 0, alfa: 0 };
             let t = null;
-            me.attendance.forEach(a => { if (!isSchoolDay(a.att_date)) return; sum[a.status.toLowerCase()]++; if (a.att_date === today) t = a; });
-            const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: r.avatar, isQrOfficer: !!r.is_qr_officer,
-                status: t ? t.status : (isSchoolDay(today) ? 'BELUM' : 'LIBUR'), time: t ? t.scan_time : '-', attendanceSummary: sum, username: r.nis, accountStatus: 'Aktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
+            me.attendance.forEach(a => { if (!statRowOk(r.id, a.att_date)) return; sum[a.status.toLowerCase()]++; if (a.att_date === today) t = a; });
+            const st = { id: r.id, nis: r.nis, name: esc(r.name), gender: r.gender, phone: esc(r.phone), parent: esc(r.parent), parentPhone: esc(r.parent_phone), address: esc(r.address), mapLink: r.map_link, avatar: safeImg(r.avatar), isQrOfficer: !!r.is_qr_officer,
+                status: t ? t.status : (!isSchoolDay(today) ? 'LIBUR' : isSuspended(r.id, today) ? 'SKORSING' : 'BELUM'), time: t ? t.scan_time : '-', attendanceSummary: sum, username: r.nis, accountStatus: 'Aktif', lastLogin: t ? `${t.status} • ${t.scan_time}` : '-' };
             mockState.students = [st];
             mockState.attendanceRows = me.attendance.map(a => ({ sid: r.id, date: a.att_date, status: a.status, time: a.scan_time, createdAt: a.created_at, derived: !!a.derived }));
             const who = { studentName: st.name, nis: st.nis };
             mockState.violations = me.violations.filter(x => x.status !== 'BATAL').map(x => { const r = x; return ({ id: r.id, rawDate: r.vio_date, createdAt: r.created_at, pts: r.pts != null ? r.pts : Math.abs(r.points || 0), status: r.status || 'TERBUKTI', ruleId: r.rule_id, qty: r.qty || 1, reporter: esc(r.reporter || ''), cancelReason: esc(r.cancel_reason || ''), ...who, date: fmtDate(x.vio_date), violation: esc(x.violation), category: x.category, points: x.points, action: esc(x.action) }); });
             mockState.counseling = me.counseling.map(x => ({ id: x.id, createdAt: x.created_at, rawDate: x.c_date, ...who, date: fmtDate(x.c_date), category: esc(x.category), description: esc(x.description), action: esc(x.action), result: esc(x.result), status: x.status }));
-            mockState.homeVisits = me.home_visits.map(x => ({ id: x.id, ...who, date: fmtDate(x.visit_date), officer: esc(x.officer), reason: esc(x.reason), result: esc(x.result), status: x.status, evidenceUrl: x.evidence_url }));
-            mockState.permissions = me.permissions.map(x => ({ id: x.id, studentId: r.id, ...who, category: x.category, date: fmtDate(x.perm_date), rawDate: x.perm_date, reason: esc(x.reason), status: x.status, evidenceType: 'whatsapp', evidenceUrl: x.evidence_url || `https://wa.me/${waNum(sc.teacherPhone)}` }));
-            mockState.currentUser = { id: r.id, nis: r.nis, name: r.name, role: `Siswa ${p.class_name}`, nip: '', avatar: r.avatar, isQrOfficer: !!r.is_qr_officer, phone: r.phone, address: r.address, parent: r.parent, parentPhone: r.parent_phone };
+            mockState.homeVisits = me.home_visits.map(x => ({ id: x.id, ...who, date: fmtDate(x.visit_date), officer: esc(x.officer), reason: esc(x.reason), result: esc(x.result), status: x.status, evidenceUrl: cleanUrl(x.evidence_url) }));
+            mockState.permissions = me.permissions.map(x => ({ id: x.id, studentId: r.id, ...who, category: x.category, date: fmtDate(x.perm_date), rawDate: x.perm_date, reason: esc(x.reason), status: x.status, evidenceType: 'whatsapp', evidenceUrl: cleanUrl(x.evidence_url) || `https://wa.me/${waNum(sc.teacherPhone)}` }));
+            mockState.currentUser = { id: r.id, nis: r.nis, name: r.name, role: `Siswa ${p.class_name}`, nip: '', avatar: safeImg(r.avatar), isQrOfficer: !!r.is_qr_officer, phone: r.phone, address: r.address, parent: r.parent, parentPhone: r.parent_phone };
             recalculateStats();
         }
         async function loadStudentAll() {
@@ -2516,7 +2573,7 @@
                 else if(s.status === 'SAKIT') sick++;
                 else if(s.status === 'IZIN') permitted++;
                 else if(s.status === 'ALFA') alpha++;
-                else if(s.status === 'LIBUR') { /* hari libur: tidak dihitung */ }
+                else if(s.status === 'LIBUR' || s.status === 'SKORSING') { /* libur / skorsing: tidak dihitung */ }
                 else unrecorded++;
             });
             mockState.stats.present = present;
@@ -2913,16 +2970,7 @@ async function sendAlfaLateRecap() {
                     ${studentAlertBannerHtml(user)}
                     ${teladanBadgeHtml(user)}
 
-                    <div class="bg-gradient-to-r from-santara-navy via-indigo-950 to-santara-navy rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden flex items-center justify-between border border-white/10">
-                        <div class="absolute -right-10 -bottom-10 opacity-10 text-9xl"><i class="fa-solid fa-quote-right"></i></div>
-                        <div class="space-y-3 z-10 pr-4">
-                            <div class="flex items-center space-x-2.5">
-                                <span class="px-3 py-1 bg-teal-500 text-white rounded-full text-[10px] font-extrabold uppercase tracking-widest">${todayQuote.type} Hari Ini</span>
-                            </div>
-                            <p class="text-sm md:text-base font-semibold italic text-blue-50 leading-relaxed">"${todayQuote.quote}"</p>
-                            <p class="text-xs text-teal-200 font-bold">— ${todayQuote.author}</p>
-                        </div>
-                    </div>
+                    
 
                     <div class="bg-white rounded-3xl p-6 border border-santara-border shadow-sm space-y-4">
                         <div class="flex items-center space-x-2.5 border-b pb-3.5">
@@ -2945,9 +2993,9 @@ async function sendAlfaLateRecap() {
                         <div class="flex items-center justify-between border-b pb-3.5">
                             <div class="flex items-center space-x-2.5 text-red-600">
                                 <i class="fa-solid fa-triangle-exclamation text-lg animate-bounce"></i>
-                                <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Notifikasi Pelanggaran & Poin Karakter</h3>
+                                <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Riwayat Pelanggaran</h3>
                             </div>
-                            <span class="px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-black">${myViolations.length} Kasus (Poin: ${myPoints}/100)</span>
+                            <span class="px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-black">${myViolations.length} kasus • skor karakter ${myPoints}/100</span>
                         </div>
                         <div class="space-y-2.5 max-h-60 overflow-y-auto pr-1">
                             ${myViolations.length === 0 ? '<p class="text-xs text-gray-400 text-center py-4">Bersih! Anda tidak memiliki catatan pelanggaran.</p>' : myViolations.map(v => `
@@ -2957,11 +3005,22 @@ async function sendAlfaLateRecap() {
                                             <span class="font-bold text-santara-navy">${v.violation}</span>
                                             <span class="text-[10px] text-gray-400">• ${v.date}</span>
                                         </div>
-                                        <p class="text-gray-700 mt-1 font-medium">Tindakan: ${v.action} — <span class="text-red-600 font-extrabold">${v.points} Poin</span></p>
+                                        <p class="text-gray-700 mt-1 font-medium">Tindakan: ${v.action} — <span class="text-red-600 font-extrabold">+${v.pts != null ? v.pts : Math.abs(v.points)} poin</span></p>
                                     </div>
                                     <span class="px-2.5 py-1 bg-white text-red-700 border border-red-200 rounded-lg text-[10px] font-bold shadow-xs">${v.category}</span>
                                 </div>
                             `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="bg-gradient-to-r from-santara-navy via-indigo-950 to-santara-navy rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden flex items-center justify-between border border-white/10">
+                        <div class="absolute -right-10 -bottom-10 opacity-10 text-9xl"><i class="fa-solid fa-quote-right"></i></div>
+                        <div class="space-y-3 z-10 pr-4">
+                            <div class="flex items-center space-x-2.5">
+                                <span class="px-3 py-1 bg-teal-500 text-white rounded-full text-[10px] font-extrabold uppercase tracking-widest">${todayQuote.type} Hari Ini</span>
+                            </div>
+                            <p class="text-sm md:text-base font-semibold italic text-blue-50 leading-relaxed">"${todayQuote.quote}"</p>
+                            <p class="text-xs text-teal-200 font-bold">— ${todayQuote.author}</p>
                         </div>
                     </div>
                 </div>
@@ -3275,7 +3334,8 @@ async function sendAlfaLateRecap() {
             const s = mockState.students.find(x => x.id === studentId) || mockState.students[0];
             const container = document.getElementById('mainContentArea');
             const cs = mockState.counseling.filter(c => c.nis === s.nis);
-            const viols = mockState.violations.filter(v => v.nis === s.nis);
+            const viols = mockState.violations.filter(v => v.nis === s.nis && v.status !== 'BATAL');
+            const dsc = computeDiscipline(s);
             const hvs = mockState.homeVisits.filter(h => h.nis === s.nis);
             const studentPoints = getStudentPoints(s);
 
@@ -3287,7 +3347,7 @@ async function sendAlfaLateRecap() {
                             <div>
                                 <span class="px-3 py-1 bg-white/25 rounded-full text-[10px] font-bold">${s.isQrOfficer ? 'Kader Petugas QR' : `Siswa ${mockState.schoolConfig.className}`}</span>
                                 <h2 class="text-xl md:text-2xl font-black mt-1">${s.name}</h2>
-                                <p class="text-xs text-blue-100 mt-0.5">NISN: <span class="font-mono font-bold">${s.nis}</span> • Poin Karakter: <span class="bg-green-500 text-white px-2 py-0.5 rounded font-bold">${studentPoints}/100</span></p>
+                                <p class="text-xs text-blue-100 mt-0.5">NISN: <span class="font-mono font-bold">${s.nis}</span> • Skor Karakter: <span class="bg-green-500 text-white px-2 py-0.5 rounded font-bold">${studentPoints}/100</span></p>
                             </div>
                         </div>
                         <div class="flex flex-wrap gap-2">
@@ -3300,7 +3360,7 @@ async function sendAlfaLateRecap() {
                     <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm space-y-4">
                         <div class="flex items-center space-x-3 border-b pb-3.5">
                             <div class="w-9 h-9 rounded-xl bg-teal-50 text-santara-teal flex items-center justify-center font-black text-sm">1</div>
-                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">1. Data Diri & Orang Tua</h3>
+                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">Data Diri & Orang Tua</h3>
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
                             <div class="space-y-3 text-gray-700">
@@ -3321,7 +3381,7 @@ async function sendAlfaLateRecap() {
                     <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm space-y-4">
                         <div class="flex items-center space-x-3 border-b pb-3.5">
                             <div class="w-9 h-9 rounded-xl bg-purple-50 text-purple-700 flex items-center justify-center font-black text-sm">2</div>
-                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">2. Catatan Pembinaan & Konseling BK (Detail)</h3>
+                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">Catatan Pembinaan & Konseling BK (Detail)</h3>
                         </div>
                         <div class="space-y-3 text-xs">
                             ${cs.length > 0 ? cs.map(c => `
@@ -3338,11 +3398,11 @@ async function sendAlfaLateRecap() {
                     <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm space-y-4">
                         <div class="flex items-center space-x-3 border-b pb-3.5">
                             <div class="w-9 h-9 rounded-xl bg-red-50 text-red-700 flex items-center justify-center font-black text-sm">3</div>
-                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">3. Riwayat Pelanggaran & Poin Karakter (Detail)</h3>
+                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">Riwayat Pelanggaran & Poin Karakter (Detail)</h3>
                         </div>
                         <div class="flex items-center justify-between bg-red-50 p-4 rounded-2xl border border-red-200 text-xs font-bold">
-                            <span class="text-gray-700">Saldo Poin Tata Tertib Saat Ini:</span>
-                            <span class="text-red-700 font-black text-sm">${studentPoints} / 100 Poin</span>
+                            <span class="text-gray-700">Skor karakter saat ini <span class="text-[10px] text-gray-400 font-semibold">(poin pelanggaran ${dsc.total} • ${STAGES[dsc.stage][0]})</span>:</span>
+                            <span class="text-red-700 font-black text-sm">${studentPoints} / 100</span>
                         </div>
                         <div class="space-y-2.5 text-xs">
                             ${viols.length > 0 ? viols.map(v => `
@@ -3351,7 +3411,7 @@ async function sendAlfaLateRecap() {
                                         <span class="font-bold text-santara-navy text-sm">${v.violation}</span>
                                         <p class="text-gray-600 text-[11px] font-medium mt-1">Kategori: <strong>${v.category}</strong> • Tindakan: ${v.action} • Tanggal: ${v.date}</p>
                                     </div>
-                                    <span class="px-3 py-1.5 bg-red-100 text-red-700 rounded-xl font-black text-xs">${v.points} Poin</span>
+                                    <span class="px-3 py-1.5 bg-red-100 text-red-700 rounded-xl font-black text-xs">+${v.pts != null ? v.pts : Math.abs(v.points)} poin</span>
                                 </div>
                             `).join('') : '<p class="text-gray-400 text-xs py-2 font-medium">Bersih! Tidak ada catatan pelanggaran.</p>'}
                         </div>
@@ -3360,7 +3420,7 @@ async function sendAlfaLateRecap() {
                     <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm space-y-4">
                         <div class="flex items-center space-x-3 border-b pb-3.5">
                             <div class="w-9 h-9 rounded-xl bg-teal-50 text-santara-teal flex items-center justify-center font-black text-sm">4</div>
-                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">4. Dokumentasi Home Visit & Kunjungan Rumah (Detail)</h3>
+                            <h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wider">Dokumentasi Home Visit & Kunjungan Rumah (Detail)</h3>
                         </div>
                         <div class="space-y-3 text-xs">
                             ${hvs.length > 0 ? hvs.map(h => `
@@ -3636,7 +3696,7 @@ async function sendAlfaLateRecap() {
                             <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 text-xs text-amber-900 flex items-start space-x-2.5">
                                 <i class="fa-brands fa-whatsapp text-green-600 text-lg mt-0.5 shrink-0"></i>
                                 <div>
-                                    <span class="font-bold">Ketentuan Lampiran Bukti:</span> Sesuai instruksi, setelah klik kirim, Anda akan diarahkan ke WhatsApp Wali Kelas (${mockState.schoolConfig.teacherName}) untuk mengirimkan foto surat dokter / bukti izin secara langsung.
+                                    <span class="font-bold">Ketentuan Lampiran Bukti:</span> Sesuai instruksi, setelah klik kirim, Anda akan diarahkan ke WhatsApp Wali Kelas (${mockState.schoolConfig.teacherName}) untuk mengirimkan foto surat dokter / bukti izin secara langsung. Pengajuan paling lambat 2x24 jam setelah tanggal tidak masuk, dan hanya untuk hari sekolah.
                                 </div>
                             </div>
                             <button onclick="submitMyPermissionWhatsApp()" class="w-full py-4 bg-santara-teal hover:bg-teal-800 text-white font-bold rounded-2xl shadow-lg transition flex items-center justify-center space-x-2 text-xs uppercase tracking-wider">
@@ -3645,6 +3705,9 @@ async function sendAlfaLateRecap() {
                             </button>
                         </div>
                     </div>
+
+                    ${(() => { const mine = (mockState.permissions || []).slice().sort((a, b) => String(b.rawDate).localeCompare(String(a.rawDate))).slice(0, 8); const st = { PENDING: ['Menunggu verifikasi', 'bg-yellow-100 text-yellow-800'], APPROVED: ['Disetujui', 'bg-green-100 text-green-800'], REJECTED: ['Ditolak', 'bg-red-100 text-red-800'] };
+                        return `<div class="bg-white rounded-3xl p-6 border border-santara-border shadow-sm space-y-3"><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">Riwayat Pengajuan Saya</h3>${mine.length ? `<div class="divide-y divide-gray-100">${mine.map(p => `<div class="flex items-center justify-between py-2.5 gap-3 text-xs"><span class="min-w-0"><span class="block font-bold text-santara-navy">${p.category} • ${p.date}</span><span class="block text-[11px] text-gray-500 truncate">${p.reason}</span></span><span class="px-2.5 py-1 rounded-full text-[10px] font-extrabold shrink-0 ${st[p.status][1]}">${st[p.status][0]}</span></div>`).join('')}</div>` : '<p class="text-xs text-gray-400">Belum ada pengajuan.</p>'}</div>`; })()}
                 </div>
             `;
         }
@@ -4241,88 +4304,36 @@ async function sendAlfaLateRecap() {
 
         function renderSettingsView(container) {
             const sc = mockState.schoolConfig;
+            const f = (label, id, val, extra) => `<div><label class="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wide">${label}</label><input type="${(extra && extra.type) || 'text'}" id="${id}" value="${val == null ? '' : val}" ${(extra && extra.attr) || ''} class="w-full p-3.5 border border-santara-border rounded-2xl text-sm font-medium bg-gray-50 focus:bg-white focus:ring-2 focus:ring-santara-teal focus:outline-none" ${(extra && extra.ph) ? `placeholder="${extra.ph}"` : ''}></div>`;
+            const sec = (icon, tone, title, sub, inner) => `<section class="bg-white rounded-3xl border border-santara-border shadow-sm p-5 md:p-6 space-y-4"><div class="flex items-center gap-3 border-b pb-3.5"><span class="w-10 h-10 shrink-0 rounded-xl ${tone} flex items-center justify-center"><i class="fa-solid ${icon}"></i></span><div><h3 class="font-extrabold text-santara-navy text-sm uppercase tracking-wide">${title}</h3><p class="text-[11px] text-santara-textSec">${sub}</p></div></div>${inner}</section>`;
             container.innerHTML = `
-                <div class="space-y-6 max-w-2xl mx-auto pb-12">
-                    <div class="bg-white rounded-3xl p-6 md:p-8 border border-santara-border shadow-sm space-y-6">
-                        <div>
-                            <h3 class="text-lg font-bold text-santara-navy">Pengaturan Identitas Sekolah & Akun Wali Kelas</h3>
-                            <p class="text-xs text-santara-textSec mt-0.5">Perubahan ini akan terintegrasi ke seluruh sistem (Kop surat laporan A4, WhatsApp izin, profil, dan PIN login).</p>
-                        </div>
-
-                        <div class="space-y-4 text-xs">
-                            <div class="flex items-center space-x-4 bg-gray-50 p-4 rounded-2xl border">
-                                <img id="settingAvatarPreview" src="${sc.avatar}" class="w-16 h-16 rounded-2xl object-cover border-2 border-santara-teal shadow">
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">FOTO PROFIL WALI KELAS</label>
-                                    <input type="file" id="settingAvatarFile" accept="image/*" class="w-full text-xs font-medium">
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">NAMA SEKOLAH</label>
-                                    <input type="text" id="setSchoolName" value="${sc.schoolName}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">KOMPETENSI KEAHLIAN / JURUSAN</label>
-                                    <input type="text" id="setDept" value="${sc.department}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">KELAS BINAAN</label>
-                                    <input type="text" id="setClassName" value="${sc.className}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">TAHUN PELAJARAN</label>
-                                    <input type="text" id="setAcademicYear" value="${sc.academicYear}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">NAMA KEPALA SEKOLAH</label>
-                                    <input type="text" id="setPrincipalName" value="${sc.principalName}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">NIP KEPALA SEKOLAH</label>
-                                    <input type="text" id="setPrincipalNip" value="${sc.principalNip}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">NAMA WALI KELAS & GELAR</label>
-                                    <input type="text" id="setTeacherName" value="${sc.teacherName}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">NIP WALI KELAS</label>
-                                    <input type="text" id="setTeacherNip" value="${sc.teacherNip}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">NOMOR WHATSAPP WALI KELAS (Format: 628...)</label>
-                                    <input type="text" id="setTeacherPhone" value="${sc.teacherPhone}" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                                <div>
-                                    <label class="block font-bold mb-1 uppercase text-gray-700">PASSWORD LOGIN BARU (EMAIL LOGIN TIDAK BERUBAH)</label>
-                                    <input type="password" id="setTeacherPassword" value="" placeholder="Kosongkan jika tidak diganti (min. 6 karakter)" autocomplete="new-password" class="w-full p-3.5 border rounded-xl font-medium">
-                                </div>
-                            </div>
-
-                            <div>
-                                <label class="block font-bold mb-1 uppercase text-gray-700">ALAMAT SEKOLAH</label>
-                                <input type="text" id="setSchoolAddress" value="${sc.address}" class="w-full p-3.5 border rounded-xl font-medium">
-                            </div>
-
-                            <button onclick="saveSchoolSettings()" class="w-full py-4 bg-santara-teal hover:bg-teal-800 text-white font-bold rounded-2xl shadow-lg transition">Simpan & Sinkronkan Identitas Sekolah</button>
-                        </div>
-                    </div>
-                </div>
-            `;
+                <div class="space-y-5 max-w-3xl mx-auto pb-28 md:pb-24">
+                    ${pageHeader('fa-gear', 'Pengaturan Akun & Sekolah', 'Perubahan berlaku untuk kop surat, laporan A4, pesan WhatsApp, dan seluruh dokumen')}
+                    ${sec('fa-image', 'bg-teal-50 text-santara-teal', 'Foto Profil Wali Kelas', 'Tampil di menu dan dashboard',
+                        `<div class="flex items-center gap-4"><img id="settingAvatarPreview" src="${safeImg(sc.avatar)}" alt="Foto profil" class="w-20 h-20 rounded-2xl object-cover border-2 border-santara-teal shadow-sm"><div class="flex-1"><input type="file" id="settingAvatarFile" accept="image/*" onchange="previewSettingAvatar(this)" class="w-full text-xs file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:bg-santara-navy file:text-white file:font-bold"><p class="text-[10px] text-gray-400 mt-1.5">Format JPG/PNG. Ukuran dikecilkan otomatis.</p></div></div>`)}
+                    ${sec('fa-school', 'bg-blue-50 text-blue-600', 'Identitas Sekolah', 'Dipakai pada kop surat dan laporan',
+                        `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${f('Nama sekolah', 'setSchoolName', sc.schoolName, { attr: 'oninput="updKopPreview()"' })}${f('Kompetensi keahlian / jurusan', 'setDept', sc.department, { attr: 'oninput="updKopPreview()"' })}${f('Kelas binaan', 'setClassName', sc.className)}${f('Tahun pelajaran', 'setAcademicYear', esc(sc.academicYear), { ph: '2026/2027' })}</div>
+                        ${f('Alamat sekolah', 'setSchoolAddress', sc.address, { attr: 'oninput="updKopPreview()"' })}
+                        <div><p class="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-1.5">Pratinjau kop surat</p><div id="kopPreview" class="rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4"></div></div>`)}
+                    ${sec('fa-signature', 'bg-purple-50 text-purple-600', 'Penandatangan Dokumen', 'Nama dan NIP yang tercetak pada surat dan laporan',
+                        `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${f('Nama kepala sekolah', 'setPrincipalName', sc.principalName)}${f('NIP kepala sekolah', 'setPrincipalNip', esc(sc.principalNip))}${f('Nama wali kelas & gelar', 'setTeacherName', sc.teacherName)}${f('NIP wali kelas', 'setTeacherNip', esc(sc.teacherNip))}</div>`)}
+                    ${sec('fa-lock', 'bg-amber-50 text-amber-600', 'Kontak & Keamanan', 'Nomor WhatsApp untuk pengajuan izin siswa dan password login',
+                        `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">${f('Nomor WhatsApp wali kelas (format 628...)', 'setTeacherPhone', esc(sc.teacherPhone), { attr: 'inputmode="numeric"' })}${f('Password login baru', 'setTeacherPassword', '', { type: 'password', ph: 'Kosongkan jika tidak diganti (min. 6 karakter)', attr: 'autocomplete="new-password"' })}</div><p class="text-[10px] text-gray-400">Email login tidak berubah.</p>`)}
+                    <div class="fixed left-0 right-0 bottom-[72px] md:bottom-4 md:left-64 z-30 px-4 md:px-8 pointer-events-none"><div class="max-w-3xl mx-auto pointer-events-auto bg-white/95 backdrop-blur border border-santara-border rounded-2xl shadow-lg p-3 flex items-center justify-between gap-3">
+                        <p class="text-[11px] text-gray-500 font-medium hidden sm:block">Pastikan nama dan NIP sudah benar sebelum menerbitkan surat resmi.</p>
+                        <button onclick="saveSchoolSettings()" class="w-full sm:w-auto px-6 py-3 bg-santara-teal hover:bg-teal-800 text-white font-bold rounded-xl shadow-md text-xs uppercase tracking-wider"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Simpan & Sinkronkan</button>
+                    </div></div>
+                </div>`;
+            updKopPreview();
+        }
+        function previewSettingAvatar(inp) {
+            const f = inp.files && inp.files[0]; if (!f) return;
+            const r = new FileReader(); r.onload = e => { const im = document.getElementById('settingAvatarPreview'); if (im && /^data:image\//.test(e.target.result)) im.src = e.target.result; }; r.readAsDataURL(f);
+        }
+        function updKopPreview() {
+            const el = document.getElementById('kopPreview'); if (!el) return;
+            const g = i => unesc((document.getElementById(i) || {}).value || '');
+            el.innerHTML = `<div class="text-center leading-tight"><div class="font-extrabold tracking-wide text-sm text-santara-navy">${esc(g('setSchoolName').toUpperCase())}</div><div class="font-bold text-xs text-santara-navy">Program Keahlian ${esc(g('setDept'))}</div><div class="text-[11px] text-gray-600 mt-0.5">${esc(g('setSchoolAddress'))}</div><div class="border-t-4 border-double border-gray-400 mt-2"></div></div>`;
         }
 
         function saveSchoolSettings() {
@@ -4338,8 +4349,8 @@ async function sendAlfaLateRecap() {
                     if (newPw) { r = await sb.auth.updateUser({ password: newPw }); if (r.error) throw r.error; }
                 }, null, null).then(() => {
                     const sc = mockState.schoolConfig, cu = mockState.currentUser;
-                    Object.assign(cu, { name: sc.teacherName, nip: sc.teacherNip, phone: sc.teacherPhone, role: `Wali Kelas ${sc.className}`, avatar: sc.avatar });
-                    ['sidebarUserName', 'topbarUserName', 'dropdownUserFullName'].forEach(id => { const el = document.getElementById(id); if (el) el.innerText = sc.teacherName; });
+                    Object.assign(cu, { name: unesc(sc.teacherName), nip: sc.teacherNip, phone: sc.teacherPhone, role: `Wali Kelas ${unesc(sc.className)}`, avatar: sc.avatar });
+                    ['sidebarUserName', 'topbarUserName', 'dropdownUserFullName'].forEach(id => { const el = document.getElementById(id); if (el) el.innerText = unesc(sc.teacherName); });
                     document.getElementById('sidebarUserRole').innerText = cu.role;
                     document.getElementById('sidebarUserAvatar').src = sc.avatar; document.getElementById('topbarUserAvatar').src = sc.avatar;
                     showToast('Berhasil Disimpan', 'Identitas sekolah dan akun wali kelas berhasil disinkronkan.');
