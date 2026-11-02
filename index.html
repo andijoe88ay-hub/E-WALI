@@ -1123,6 +1123,175 @@
                 (ev.length ? `<div class="divide-y divide-gray-50">${ev.slice(0, 8).map(activityItemHtml).join('')}</div><button onclick="openActivityAll()" class="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-santara-border rounded-xl text-xs font-bold text-santara-navy">Lihat Semua</button>` : emptyBox('fa-clock-rotate-left', 'Belum ada aktivitas tercatat.')));
         }
 
+        // ---------- Ekspor & cadangan data (Excel, CSV, JSON) ----------
+        const BK_TABLES = ['students', 'attendance', 'violations', 'counseling', 'home_visits', 'permissions', 'holidays', 'rules', 'discipline_actions', 'remissions', 'suspensions', 'letters'];
+        const BK_SHEETS = [['siswa', 'Siswa'], ['absensi', 'Absensi Harian'], ['rekap', 'Rekap Kehadiran'], ['poin', 'Poin & Tahap'], ['pelanggaran', 'Pelanggaran'], ['bk', 'Pembinaan BK'], ['visit', 'Home Visit'], ['izin', 'Izin & Sakit'], ['tindakan', 'Tindakan Disiplin'], ['pemutihan', 'Pemutihan'], ['skorsing', 'Skorsing'], ['libur', 'Hari Libur'], ['aturan', 'Aturan & Bobot'], ['surat', 'Arsip Surat']];
+        let bkBusy = false;
+        function lastBackup() { try { return JSON.parse(localStorage.getItem('santara_last_backup') || 'null'); } catch (e) { return null; } }
+        function backupAgeDays() { const b = lastBackup(); return b ? Math.floor((Date.now() - b.ts) / 86400000) : null; }
+        function backupStatusText() { const a = backupAgeDays(); return a == null ? 'Belum pernah mengunduh cadangan' : (a === 0 ? 'Terakhir: hari ini' : `Terakhir: ${a} hari lalu`) + ` (${esc(lastBackup().format)})`; }
+        function renderBackupBanner() {
+            const box = document.getElementById('backupBanner'); if (!box) return;
+            let hide = 0; try { hide = Number(localStorage.getItem('santara_bk_dismiss') || 0); } catch (e) { /* abaikan */ }
+            const a = backupAgeDays();
+            if ((a != null && a < 30) || Date.now() < hide) { box.innerHTML = ''; return; }
+            box.innerHTML = `<div class="rounded-2xl px-4 py-3 bg-indigo-50 border border-indigo-200 text-xs text-indigo-900 font-semibold flex flex-col sm:flex-row sm:items-center justify-between gap-2"><span><i class="fa-solid fa-database mr-1.5"></i>${a == null ? 'Belum ada cadangan data. Unduh salinan sekarang agar data kelas aman.' : `Cadangan terakhir ${a} hari lalu. Disarankan mengunduh cadangan baru.`}</span><span class="flex gap-2"><button onclick="renderView('backup')" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold">Buka Ekspor & Cadangan</button><button onclick="dismissBackupBanner()" class="px-3 py-1.5 bg-white border border-indigo-200 rounded-lg font-bold">Nanti</button></span></div>`;
+        }
+        function dismissBackupBanner() { try { localStorage.setItem('santara_bk_dismiss', String(Date.now() + 7 * 86400000)); } catch (e) { /* abaikan */ } renderBackupBanner(); }
+
+        // ----- penulis berkas (tanpa pustaka luar) -----
+        const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+        function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+        function u8of(str) { return new TextEncoder().encode(str); }
+        function zipStore(files) {   // files: [{ name, data: Uint8Array }] -> Uint8Array (ZIP tanpa kompresi, nama UTF-8)
+            const now = new Date(), dt = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate(), tm = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+            const parts = [], cen = []; let off = 0;
+            files.forEach(f => {
+                const nm = u8of(f.name), crc = crc32(f.data), loc = new DataView(new ArrayBuffer(30));
+                loc.setUint32(0, 0x04034b50, true); loc.setUint16(4, 20, true); loc.setUint16(6, 0x0800, true); loc.setUint16(8, 0, true); loc.setUint16(10, tm, true); loc.setUint16(12, dt, true);
+                loc.setUint32(14, crc, true); loc.setUint32(18, f.data.length, true); loc.setUint32(22, f.data.length, true); loc.setUint16(26, nm.length, true); loc.setUint16(28, 0, true);
+                const ce = new DataView(new ArrayBuffer(46));
+                ce.setUint32(0, 0x02014b50, true); ce.setUint16(4, 20, true); ce.setUint16(6, 20, true); ce.setUint16(8, 0x0800, true); ce.setUint16(10, 0, true); ce.setUint16(12, tm, true); ce.setUint16(14, dt, true);
+                ce.setUint32(16, crc, true); ce.setUint32(20, f.data.length, true); ce.setUint32(24, f.data.length, true); ce.setUint16(28, nm.length, true); ce.setUint32(42, off, true);
+                parts.push(new Uint8Array(loc.buffer), nm, f.data); cen.push(new Uint8Array(ce.buffer), nm);
+                off += 30 + nm.length + f.data.length;
+            });
+            const cenLen = cen.reduce((n, p) => n + p.length, 0), end = new DataView(new ArrayBuffer(22));
+            end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cenLen, true); end.setUint32(16, off, true);
+            const all = [...parts, ...cen, new Uint8Array(end.buffer)], out = new Uint8Array(all.reduce((n, p) => n + p.length, 0)); let o = 0; all.forEach(p => { out.set(p, o); o += p.length; }); return out;
+        }
+        function xmlEsc(v) { return String(v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+        function colName(i) { let n = '', x = i + 1; while (x > 0) { const m = (x - 1) % 26; n = String.fromCharCode(65 + m) + n; x = Math.floor((x - 1) / 26); } return n; }
+        function sheetXml(rows) {
+            const ncol = rows.reduce((n, r) => Math.max(n, r.length), 1), w = Array.from({ length: ncol }, (_, c) => Math.min(60, Math.max(8, ...rows.slice(0, 200).map(r => String(r[c] == null ? '' : r[c]).length)) + 2));
+            const body = rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) => { if (v == null || v === '') return ''; const ref = colName(ci) + (ri + 1), st = ri === 0 ? ' s="1"' : '';
+                return typeof v === 'number' && isFinite(v) ? `<c r="${ref}"${st}><v>${v}</v></c>` : `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(String(v).slice(0, 32000))}</t></is></c>`; }).join('')}</row>`).join('');
+            return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${w.map((x, i) => `<col min="${i + 1}" max="${i + 1}" width="${x}" customWidth="1"/>`).join('')}</cols><sheetData>${body}</sheetData>${rows.length > 1 ? `<autoFilter ref="A1:${colName(ncol - 1)}${rows.length}"/>` : ''}</worksheet>`;
+        }
+        function buildXlsx(sheets) {   // sheets: [{ name, rows }]
+            const used = new Set(), names = sheets.map(sh => { let n = String(sh.name).replace(/[\[\]:*?\/\\]/g, ' ').trim().slice(0, 31) || 'Lembar', k = 2; while (used.has(n.toLowerCase())) n = n.slice(0, 28) + ' ' + k++; used.add(n.toLowerCase()); return n; });
+            const files = [
+                { name: '[Content_Types].xml', data: u8of(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`) },
+                { name: '_rels/.rels', data: u8of('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>') },
+                { name: 'xl/workbook.xml', data: u8of(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((n, i) => `<sheet name="${xmlEsc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`) },
+                { name: 'xl/_rels/workbook.xml.rels', data: u8of(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`) },
+                { name: 'xl/styles.xml', data: u8of('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0F766E"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/></styleSheet>') }
+            ];
+            sheets.forEach((sh, i) => files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: u8of(sheetXml(sh.rows)) }));
+            return zipStore(files);
+        }
+        function csvSafe(v) { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t) && !/^-?\d+([.,]\d+)?$/.test(t)) t = "'" + t; return /[;"\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; }
+        function csvOf(rows) { return '\uFEFF' + rows.map(r => r.map(csvSafe).join(';')).join('\r\n') + '\r\n'; }
+        function downloadBytes(bytes, filename, mime) {
+            const url = URL.createObjectURL(new Blob([bytes], { type: mime })), a = document.createElement('a');
+            a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+        }
+
+        // ----- pengambilan & penyusunan data -----
+        async function fetchTableRaw(t) {
+            const r = await fetchAllRows(() => sb.from(t).select('*').order('id', { ascending: true }));
+            if (r.error) { if (/does not exist|schema cache|relation/i.test(String(r.error.message || ''))) return []; throw r.error; }
+            return r.data;
+        }
+        async function collectRaw() {
+            const raw = {}; for (const t of BK_TABLES) raw[t] = await fetchTableRaw(t);
+            const pr = await sb.from('profiles').select('*').eq('id', mockState.uid).maybeSingle(); if (pr.error) throw pr.error;
+            const prof = Object.assign({}, pr.data || {}); delete prof.qr_secret; raw.profile = prof;
+            return raw;
+        }
+        function buildSheets(raw, opts) {
+            const yb = yearBounds(), ay = acadYear(), inYear = d => !opts.year || (String(d || '') >= yb.from && String(d || '') <= yb.to);
+            const sid = {}; (raw.students || []).forEach(x => { sid[x.id] = x; });
+            const nm = id => (sid[id] || {}).name || '', ni = id => (sid[id] || {}).nis || '';
+            const day = ts => ts ? String(ts).slice(0, 10) : '';
+            const out = {};
+            out.siswa = [['NISN', 'Nama', 'L/P', 'Telepon Siswa', 'Nama Orang Tua', 'Telepon Orang Tua', 'Alamat', 'Link Peta', 'Status Akun', 'Petugas QR', 'Kondisi Siswa']].concat(raw.students.map(x => [x.nis, x.name, x.gender, x.phone, x.parent, x.parent_phone, x.address, x.map_link, x.is_active ? 'Aktif' : 'Nonaktif', x.is_qr_officer ? 'Ya' : '', x.condition_status ? (condLabels()[x.condition_status] || x.condition_status) : '']));
+            const att = raw.attendance.filter(a => inYear(a.att_date)).map(a => [a.att_date, ni(a.student_id), nm(a.student_id), a.status, a.scan_time && a.scan_time !== '-' ? a.scan_time : '', a.source || '', day(a.created_at)]);
+            (mockState.attendanceRows || []).filter(a => a.derived && inYear(a.date)).forEach(a => { const st = studentById(a.sid); att.push([a.date, st ? st.nis : '', st ? unesc(st.name) : '', 'ALFA', '', 'otomatis (dihitung sistem)', '']); });
+            att.sort((a, b) => String(b[0]).localeCompare(String(a[0])) || String(a[2]).localeCompare(String(b[2])));
+            out.absensi = [['Tanggal', 'NISN', 'Nama', 'Status', 'Jam Scan', 'Sumber', 'Dicatat']].concat(att);
+            const act = activeStudents();
+            out.rekap = [['NISN', 'Nama', 'Hadir', 'Terlambat', 'Sakit', 'Izin', 'Alfa', 'Total Hari Tercatat', '% Kehadiran']].concat(act.map(st => { const m = st.attendanceSummary || {}, tot = (m.hadir || 0) + (m.terlambat || 0) + (m.sakit || 0) + (m.izin || 0) + (m.alfa || 0); return [st.nis, unesc(st.name), m.hadir || 0, m.terlambat || 0, m.sakit || 0, m.izin || 0, m.alfa || 0, tot, tot ? round1(((m.hadir || 0) + (m.terlambat || 0)) * 100 / tot) : '']; }));
+            out.poin = [['NISN', 'Nama', 'Terlambat', 'Alfa', 'Poin Pelanggaran Mentah', 'Pemutihan', 'Total Poin', 'Tahap', 'Skor Karakter', 'Batas Alfa (hari)', '% Batas Alfa']].concat(act.map(st => { const d = computeDiscipline(st); return [st.nis, unesc(st.name), d.late, d.alfa, d.rawTotal, d.remission, d.total, STAGES[d.stage][0], d.karakter, d.limit, d.alfaPct]; }));
+            out.pelanggaran = [['Tanggal', 'NISN', 'Nama', 'Pelanggaran', 'Kategori', 'Jumlah', 'Poin', 'Status', 'Pelapor', 'Tindakan', 'Alasan Batal']].concat(raw.violations.filter(v => inYear(v.vio_date)).map(v => [v.vio_date, ni(v.student_id), nm(v.student_id), v.violation, v.category, v.qty || 1, v.pts != null ? v.pts : Math.abs(v.points || 0), v.status || 'TERBUKTI', v.reporter || '', v.action, v.cancel_reason || '']));
+            out.bk = [['Tanggal', 'NISN', 'Nama', 'Kategori', 'Uraian', 'Tindakan', 'Hasil', 'Status']].concat(raw.counseling.filter(c => inYear(c.c_date)).map(c => [c.c_date, ni(c.student_id), nm(c.student_id), c.category, c.description, c.action, c.result, c.status]));
+            out.visit = [['Tanggal', 'NISN', 'Nama', 'Petugas', 'Tujuan', 'Hasil', 'Status']].concat(raw.home_visits.filter(h => inYear(h.visit_date)).map(h => [h.visit_date, ni(h.student_id), nm(h.student_id), h.officer, h.reason, h.result, h.status]));
+            out.izin = [['Tanggal Izin', 'NISN', 'Nama', 'Jenis', 'Alasan', 'Status', 'Diajukan']].concat(raw.permissions.filter(p => inYear(p.perm_date)).map(p => [p.perm_date, ni(p.student_id), nm(p.student_id), p.category, p.reason, p.status === 'APPROVED' ? 'Disetujui' : p.status === 'REJECTED' ? 'Ditolak' : 'Menunggu', day(p.created_at)]));
+            const aLbl = {}; ACTIONS.forEach(a => { aLbl[a[0]] = a[2]; });
+            out.tindakan = [['Tahun Ajaran', 'NISN', 'Nama', 'Tindakan', 'Tanggal Selesai', 'Catatan']].concat(raw.discipline_actions.filter(a => !opts.year || a.school_year === ay).map(a => [a.school_year, ni(a.student_id), nm(a.student_id), aLbl[a.code] || a.code, a.done_date, a.note]));
+            out.pemutihan = [['Tahun Ajaran', 'NISN', 'Nama', 'Jenis', 'Poin', 'Status', 'Referensi', 'Keterangan', 'Diajukan']].concat(raw.remissions.filter(r => !opts.year || r.school_year === ay).map(r => [r.school_year, ni(r.student_id), nm(r.student_id), (REMISSION_KINDS[r.kind] || [r.kind])[0], r.points, (REM_STATUS[r.status] || [r.status])[0], r.ref || '', r.note, day(r.created_at)]));
+            out.skorsing = [['Mulai', 'Sampai', 'NISN', 'Nama', 'Catatan']].concat(raw.suspensions.filter(x => inYear(x.start_date)).map(x => [x.start_date, x.end_date, ni(x.student_id), nm(x.student_id), x.note]));
+            out.libur = [['Tanggal', 'Nama', 'Jenis']].concat(raw.holidays.filter(h => inYear(h.h_date)).map(h => [h.h_date, h.name, (HOL_TYPE[h.type] || [h.type])[0]]));
+            out.aturan = [['Kode', 'Pasal', 'Nama', 'Poin', 'Satuan', 'Otomatis dari absensi', 'Kritis', 'Aktif']].concat(raw.rules.map(r => [r.code, r.article, r.name, r.points, r.unit, r.auto ? 'Ya' : '', r.critical ? 'Ya' : '', r.active ? 'Ya' : 'Tidak']));
+            out.surat = [['Nomor', 'Jenis', 'NISN', 'Nama', 'Tanggal Terbit']].concat(raw.letters.filter(l => !opts.year || l.school_year === ay).map(l => [l.number, (LETTER_TYPES[l.code] || {}).short || l.code, ni(l.student_id), nm(l.student_id), l.issued_date]));
+            return BK_SHEETS.filter(x => opts.pick.includes(x[0])).map(x => ({ key: x[0], name: x[1], rows: out[x[0]] }));
+        }
+        function bkOpts() {
+            const pick = BK_SHEETS.map(x => x[0]).filter(k => (document.getElementById('bkp_' + k) || {}).checked);
+            const year = ((document.querySelector('input[name="bkScope"]:checked') || {}).value || 'year') === 'year';
+            return { pick, year, avatars: !!(document.getElementById('bkAvatar') || {}).checked };
+        }
+        function bkFileBase(suffix) { const sc = mockState.schoolConfig; return `SANTARA_${String(unesc(sc.className)).replace(/[^A-Za-z0-9]+/g, '-')}_${acadYear().replace('/', '-')}_${suffix}_${todayISO()}`; }
+        function bkSetStatus(msg, bad) { const el = document.getElementById('bkStatus'); if (el) { el.className = 'text-xs font-semibold ' + (bad ? 'text-red-600' : 'text-gray-500'); el.textContent = msg; } }
+        async function runExport(kind) {
+            if (needSb() || bkBusy) return;
+            const o = bkOpts(); if (kind !== 'json' && !o.pick.length) { showToast('Peringatan', 'Pilih minimal satu lembar data.'); return; }
+            bkBusy = true; document.querySelectorAll('[data-bkbtn]').forEach(b => { b.disabled = true; b.classList.add('opacity-60'); });
+            try {
+                bkSetStatus('Mengambil data dari database...');
+                const raw = await collectRaw();
+                let name, mime, bytes, count;
+                if (kind === 'json') {
+                    const tables = {}; BK_TABLES.forEach(t => { tables[t] = raw[t].map(r => { const c = Object.assign({}, r); if (!o.avatars && 'avatar' in c) c.avatar = ''; return c; }); });
+                    const doc = { app: 'SANTARA', format: 1, exportedAt: new Date().toISOString(), schoolYear: acadYear(), className: unesc(mockState.schoolConfig.className), profile: raw.profile, tables };
+                    bytes = u8of(JSON.stringify(doc)); name = bkFileBase('cadangan-lengkap') + '.json'; mime = 'application/json'; count = BK_TABLES.reduce((n, t) => n + raw[t].length, 0);
+                } else {
+                    bkSetStatus('Menyusun lembar data...');
+                    const sheets = buildSheets(raw, o); count = sheets.reduce((n, x) => n + Math.max(0, x.rows.length - 1), 0);
+                    if (kind === 'xlsx') { bytes = buildXlsx(sheets); name = bkFileBase('data') + '.xlsx'; mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; }
+                    else { bytes = zipStore(sheets.map(x => ({ name: x.name.replace(/[^A-Za-z0-9&]+/g, '_') + '.csv', data: u8of(csvOf(x.rows)) }))); name = bkFileBase('csv') + '.zip'; mime = 'application/zip'; }
+                }
+                downloadBytes(bytes, name, mime);
+                try { localStorage.setItem('santara_last_backup', JSON.stringify({ ts: Date.now(), format: kind === 'json' ? 'JSON lengkap' : kind === 'xlsx' ? 'Excel' : 'CSV', rows: count })); } catch (e) { /* abaikan */ }
+                bkSetStatus(`Selesai: ${name} (${count} baris data).`); showToast('Unduhan Siap', `${name} • ${count} baris`);
+                const st = document.getElementById('bkLast'); if (st) st.textContent = backupStatusText();
+            } catch (e) { console.error(e); bkSetStatus('Gagal: ' + errMsg(e), true); showToast('Gagal Mengunduh', errMsg(e)); }
+            finally { bkBusy = false; document.querySelectorAll('[data-bkbtn]').forEach(b => { b.disabled = false; b.classList.remove('opacity-60'); }); }
+        }
+        function checkBackupFile(inp) {
+            const f = inp.files && inp.files[0], out = document.getElementById('bkCheck'); if (!f || !out) return;
+            const r = new FileReader();
+            r.onload = e => {
+                try {
+                    const d = JSON.parse(e.target.result); if (d.app !== 'SANTARA' || !d.tables) throw new Error('bukan cadangan SANTARA');
+                    const rows = Object.keys(d.tables).map(t => `<tr><td class="py-1 pr-4 text-gray-600">${esc(t)}</td><td class="py-1 font-bold text-santara-navy">${Array.isArray(d.tables[t]) ? d.tables[t].length : 0}</td></tr>`).join('');
+                    out.innerHTML = `<div class="p-3 bg-green-50 border border-green-200 rounded-xl text-green-900 text-xs font-semibold">Berkas valid • kelas ${esc(d.className || '-')} • tahun ajaran ${esc(d.schoolYear || '-')} • dibuat ${esc(String(d.exportedAt || '').slice(0, 16).replace('T', ' '))}</div><table class="text-xs mt-2">${rows}</table>`;
+                } catch (err) { out.innerHTML = `<div class="p-3 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs font-semibold">Berkas tidak valid: ${esc(err.message)}</div>`; }
+            };
+            r.readAsText(f);
+        }
+        function renderBackupPage(area) {
+            const counts = { siswa: mockState.students.length, absensi: (mockState.attendanceRows || []).length, pelanggaran: mockState.violations.length, bk: mockState.counseling.length };
+            const a = backupAgeDays(), warn = a == null || a >= 30;
+            const card = (icon, tone, title, sub, kind) => `<div class="p-4 rounded-2xl border border-santara-border bg-white flex flex-col gap-3"><div class="flex items-start gap-3"><span class="w-11 h-11 shrink-0 rounded-xl ${tone} flex items-center justify-center text-lg"><i class="fa-solid ${icon}"></i></span><div><h4 class="font-bold text-sm text-santara-navy">${title}</h4><p class="text-[11px] text-gray-500">${sub}</p></div></div><button data-bkbtn onclick="runExport('${kind}')" class="mt-auto w-full py-3 bg-santara-navy hover:bg-blue-900 text-white font-bold rounded-xl text-xs"><i class="fa-solid fa-download mr-1.5"></i>Unduh</button></div>`;
+            area.innerHTML = `<div class="space-y-5 max-w-4xl mx-auto">
+                ${pageHeader('fa-database', 'Ekspor & Cadangan Data', 'Unduh data kelas untuk arsip, laporan ke sekolah, atau cadangan pribadi')}
+                <div class="rounded-2xl px-4 py-3 border ${warn ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-green-50 border-green-200 text-green-900'} text-xs font-semibold flex items-center justify-between gap-3"><span><i class="fa-solid ${warn ? 'fa-triangle-exclamation' : 'fa-circle-check'} mr-1.5"></i><span id="bkLast">${backupStatusText()}</span> • ${counts.siswa} siswa, ${counts.absensi} catatan absensi, ${counts.pelanggaran} pelanggaran, ${counts.bk} pembinaan</span></div>
+                ${panelCard(panelHead('fa-filter', 'bg-blue-50 text-blue-600', 'Pilih Data', 'Berlaku untuk Excel dan CSV') +
+                    `<div class="flex flex-wrap gap-x-6 gap-y-2 text-xs font-semibold text-santara-navy"><label class="flex items-center gap-2"><input type="radio" name="bkScope" value="year" checked> Tahun ajaran ${esc(acadYear())}</label><label class="flex items-center gap-2"><input type="radio" name="bkScope" value="all"> Semua data</label></div>
+                     <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-2 text-xs text-gray-700 font-medium">${BK_SHEETS.map(x => `<label class="flex items-center gap-2"><input type="checkbox" id="bkp_${x[0]}" checked> ${x[1]}</label>`).join('')}</div>`)}
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    ${card('fa-file-excel', 'bg-green-50 text-green-600', 'Excel (.xlsx)', 'Satu berkas, banyak lembar. Mudah dibuka dan dicetak.', 'xlsx')}
+                    ${card('fa-file-zipper', 'bg-amber-50 text-amber-600', 'CSV (.zip)', 'Satu berkas CSV per tabel (pemisah titik koma, UTF-8).', 'csv')}
+                    ${card('fa-shield-halved', 'bg-indigo-50 text-indigo-600', 'Cadangan Lengkap (.json)', 'Data mentah seluruh tabel untuk pemulihan teknis. Tidak mengikuti pilihan di atas.', 'json')}
+                </div>
+                <label class="flex items-center gap-2 text-[11px] text-gray-500 font-medium"><input type="checkbox" id="bkAvatar"> Sertakan foto profil pada cadangan JSON (ukuran berkas lebih besar)</label>
+                <p id="bkStatus" class="text-xs font-semibold text-gray-500"></p>
+                ${panelCard(panelHead('fa-magnifying-glass-chart', 'bg-purple-50 text-purple-600', 'Periksa Berkas Cadangan', 'Pastikan berkas JSON utuh sebelum Anda menyimpannya') + `<input type="file" accept=".json,application/json" onchange="checkBackupFile(this)" class="w-full text-xs file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:bg-santara-navy file:text-white file:font-bold"><div id="bkCheck"></div>`)}
+                <div class="p-4 rounded-2xl bg-gray-50 border border-gray-200 text-[11px] text-gray-600 leading-relaxed"><b>Penting:</b> berkas berisi data pribadi siswa dan orang tua. Simpan di tempat yang aman (jangan dibagikan di grup atau diunggah ke layanan publik). Pemulihan dari berkas JSON saat ini dilakukan dengan bantuan teknis; Excel dan CSV untuk arsip dan pelaporan. Disarankan mengunduh cadangan minimal sebulan sekali dan sebelum akhir semester.</div>
+            </div>`;
+        }
+
         // ---------- Surat resmi: SP, panggilan, pernyataan, skorsing, rekam pleno (cetak & PDF) ----------
         const LETTER_OF = { SURAT_PERNYATAAN: 'PERNYATAAN', SP1: 'SP1', PANGGIL1: 'PANGGIL1', SP2: 'SP2', PANGGIL2: 'PANGGIL2', SKORSING: 'SKORSING', PLENO: 'PLENO' };
         const LETTER_TYPES = {
@@ -2100,7 +2269,7 @@
             students: ['Kesiswaan', 'Data Siswa', 'fa-users'], accounts: ['Kesiswaan', 'Akun Siswa', 'fa-user-gear'],
             discipline: ['Disiplin & Pembinaan', 'Disiplin & Tindak Lanjut', 'fa-scale-balanced'], violations: ['Disiplin & Pembinaan', 'Pelanggaran & Poin', 'fa-triangle-exclamation'], counseling: ['Disiplin & Pembinaan', 'Pembinaan & Konseling', 'fa-user-shield'], homeVisit: ['Disiplin & Pembinaan', 'Home Visit', 'fa-house-chimney-user'],
             analytics: ['Analitik & Laporan', 'Analitik Kondisi Kelas', 'fa-chart-line'], reports: ['Analitik & Laporan', 'Pusat Laporan', 'fa-print'], cariCetakIndiv: ['Analitik & Laporan', 'Cetak Data Individu', 'fa-id-card-clip'],
-            config: ['Konfigurasi', 'Konfigurasi Sistem', 'fa-sliders'], settings: ['Konfigurasi', 'Pengaturan Akun & Sekolah', 'fa-gear']
+            config: ['Konfigurasi', 'Konfigurasi Sistem', 'fa-sliders'], backup: ['Konfigurasi', 'Ekspor & Cadangan Data', 'fa-database'], settings: ['Konfigurasi', 'Pengaturan Akun & Sekolah', 'fa-gear']
         };
         const TABLE_ROUTES = ['students', 'accounts', 'permissions', 'violations', 'counseling', 'homeVisit'];
         const NO_FILTER_COL = /aksi|kelola|detail|foto|avatar|^no\.?$|^#$|bukti|nama|uraian|keterangan|alasan|hasil|tindakan|siswa|nisn|nis$/i;
@@ -2198,6 +2367,8 @@
                     card('fa-users-viewfinder', 'bg-purple-50 text-purple-600', 'Kategori Kondisi Siswa', Object.values(condLabels()).map(x => esc(x)).join(' • '), 'openConditionLabels()'))}
                 ${sec('Analitik', 'Cara Indeks Kondisi Kelas dihitung',
                     card('fa-gauge-high', 'bg-green-50 text-green-600', 'Bobot Indeks Kondisi Kelas', `Kehadiran ${W.att}% • Ketepatan ${W.punct}% • Disiplin ${W.disc}% • Tahap ${W.stage}%`, 'openIdxWeights()'))}
+                ${sec('Data & Cadangan', 'Unduh data untuk arsip, laporan ke sekolah, atau cadangan pribadi',
+                    card('fa-database', 'bg-indigo-50 text-indigo-600', 'Ekspor & Cadangan Data', backupStatusText(), "renderView('backup')"))}
                 ${sec('Sekolah & Akun', 'Identitas sekolah, kop surat, dan akun wali kelas',
                     card('fa-gear', 'bg-gray-100 text-gray-600', 'Identitas Sekolah & Akun', `${esc(unesc(sc.schoolName))} • Kelas ${esc(sc.className)}`, "renderView('settings')"))}
             </div>`;
@@ -2692,7 +2863,7 @@
                     grp('KESISWAAN') + link('students', 'fa-users', 'Data Siswa') + link('accounts', 'fa-user-gear', 'Akun Siswa') +
                     grp('DISIPLIN & PEMBINAAN') + link('discipline', 'fa-scale-balanced', 'Disiplin & Tindak Lanjut', badge(alertN, true)) + link('violations', 'fa-triangle-exclamation', 'Catat Pelanggaran & Poin') + link('counseling', 'fa-user-shield', 'Pembinaan & Konseling') + link('homeVisit', 'fa-house-chimney-user', 'Home Visit & Dokumen') +
                     grp('ANALITIK & LAPORAN') + link('analytics', 'fa-chart-line', 'Analitik Kondisi Kelas') + link('reports', 'fa-print', 'Pusat Laporan A4') + link('cariCetakIndiv', 'fa-id-card-clip', 'Cari & Cetak Data Individu') +
-                    grp('KONFIGURASI') + link('config', 'fa-sliders', 'Konfigurasi Sistem') + link('settings', 'fa-gear', 'Pengaturan Akun & Sekolah');
+                    grp('KONFIGURASI') + link('config', 'fa-sliders', 'Konfigurasi Sistem') + link('backup', 'fa-database', 'Ekspor & Cadangan Data') + link('settings', 'fa-gear', 'Pengaturan Akun & Sekolah');
 
                 const bn = (route, icon, label, n) => `<button onclick="renderView('${route}')" class="relative flex flex-col items-center py-1 ${currentActiveRoute === route ? 'text-santara-teal font-extrabold' : 'text-gray-500'}"><i class="fa-solid ${icon} text-lg"></i><span>${label}</span>${n ? `<span class="absolute -top-0.5 right-0 bg-red-500 text-white text-[9px] font-extrabold px-1 min-w-[16px] text-center rounded-full">${n}</span>` : ''}</button>`;
                 bottomNavHtml = bn('dashboard', 'fa-chart-pie', 'Home') + bn('qrAbsensi', 'fa-qrcode', 'QR') + bn('discipline', 'fa-scale-balanced', 'Disiplin', alertN) + bn('permissions', 'fa-envelope-open-text', 'Izin', pendPerm) +
@@ -2704,7 +2875,7 @@
                     dh('Kesiswaan') + db('students', 'fa-users', 'Data Siswa') + db('accounts', 'fa-user-gear', 'Akun Siswa') +
                     dh('Disiplin & pembinaan') + db('discipline', 'fa-scale-balanced', 'Disiplin & Tindak Lanjut', alertN) + db('violations', 'fa-triangle-exclamation', 'Pelanggaran') + db('counseling', 'fa-user-shield', 'Konseling BK') + db('homeVisit', 'fa-house-chimney-user', 'Home Visit') +
                     dh('Analitik & laporan') + db('analytics', 'fa-chart-line', 'Analitik Kelas') + db('reports', 'fa-print', 'Pusat Laporan') + db('cariCetakIndiv', 'fa-id-card-clip', 'Cetak Individu') +
-                    dh('Konfigurasi') + db('config', 'fa-sliders', 'Konfigurasi') + db('settings', 'fa-gear', 'Pengaturan Akun');
+                    dh('Konfigurasi') + db('config', 'fa-sliders', 'Konfigurasi') + db('backup', 'fa-database', 'Ekspor & Cadangan') + db('settings', 'fa-gear', 'Pengaturan Akun');
             } else {
                 sidebarHtml = `
                     <div class="text-[10px] uppercase tracking-wider text-teal-300 font-bold px-3 py-1">${isOfficer ? 'KADER PETUGAS QR' : 'MENU UTAMA SISWA'}</div>
@@ -2778,7 +2949,8 @@
                 settings: 'Pengaturan Identitas Sekolah & Akun Wali Kelas',
                 analytics: 'Analitik Kondisi Kelas',
                 discipline: 'Disiplin & Tindak Lanjut',
-                config: 'Konfigurasi Sistem'
+                config: 'Konfigurasi Sistem',
+                backup: 'Ekspor & Cadangan Data'
             };
             document.getElementById('pageTitle').innerText = titles[route] || 'SANTARA Sistem';
 
@@ -2801,6 +2973,7 @@
             else if (route === 'analytics') renderAnalyticsPage(area);
             else if (route === 'discipline') renderDisciplinePage(area);
             else if (route === 'config') renderConfigPage(area);
+            else if (route === 'backup') renderBackupPage(area);
             try { enhancePage(route, area); } catch (e) { console.error('enhancePage', e); }
         }
 
@@ -2809,6 +2982,7 @@
             container.innerHTML = `
                 <div class="space-y-6">
                     <div id="holidayBanner"></div>
+                    <div id="backupBanner"></div>
                     <div class="relative rounded-3xl overflow-hidden shadow-2xl text-white p-6 md:p-10 flex flex-col justify-center min-h-[220px]">
                         <div class="absolute inset-0 bg-cover bg-center filter brightness-50 scale-105 transform transition-transform duration-700" style="background-image: url('https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=1200&auto=format&fit=crop&q=80');"></div>
                         <div class="absolute inset-0 bg-gradient-to-r from-santara-navy/90 via-santara-teal/80 to-transparent"></div>
@@ -2868,6 +3042,7 @@
                 </div>
             `;
             renderHolidayBanner();
+            renderBackupBanner();
             renderActionStrip();
             renderTodayBox();
             renderDashIndex();
